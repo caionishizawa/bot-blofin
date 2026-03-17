@@ -1,0 +1,39 @@
+# BloFin Trading Bot — Configuration
+# Copy to config.yaml and fill in your values
+
+# Scanner settings
+pairs:
+  - BTC-USDT
+  - ETH-USDT
+  - SOL-USDT
+  - XRP-USDT
+  - DOGE-USDT
+  - ADA-USDT
+  - AVAX-USDT
+  - LINK-USDT
+  - DOT-USDT
+  - MATIC-USDT
+
+timeframe: "1H"
+scan_interval: 3600  # seconds between scans
+min_confluence: 3
+
+# Chart settings
+chart:
+  style: "dark"
+  watermark: "🤖 @YourChannel"
+  width: 1200
+  height: 800
+  candles: 80
+
+# Database
+db_path: "data/trades.db"
+
+# Telegram
+# telegram:
+#   bot_token: "YOUR_BOT_TOKEN"
+#   channel_id: -1001234567890
+#   ref_link: "https://blofin.com/register?referral=YOUR_CODE"
+
+# Logging
+log_level: "INFO"
