@@ -11,8 +11,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from utils.blofin_api import BloFinAPI
+from conftest import requires_network
 
 
+@requires_network
 async def test_get_ticker():
     """Test fetching BTC-USDT ticker."""
     api = BloFinAPI()
@@ -27,6 +29,7 @@ async def test_get_ticker():
     return True
 
 
+@requires_network
 async def test_get_candles():
     """Test fetching candlestick data."""
     api = BloFinAPI()
@@ -42,6 +45,7 @@ async def test_get_candles():
     return True
 
 
+@requires_network
 async def test_get_orderbook():
     """Test fetching order book."""
     api = BloFinAPI()
@@ -53,6 +57,7 @@ async def test_get_orderbook():
     return True
 
 
+@requires_network
 async def test_get_mark_price():
     """Test fetching mark price."""
     api = BloFinAPI()
@@ -64,6 +69,7 @@ async def test_get_mark_price():
     return True
 
 
+@requires_network
 async def test_multi_tickers():
     """Test fetching multiple tickers."""
     api = BloFinAPI()
