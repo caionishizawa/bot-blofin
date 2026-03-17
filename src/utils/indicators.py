@@ -134,10 +134,11 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def detect_signal(df: pd.DataFrame) -> dict | None:
+def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
     """Detect trading signal based on confluence of indicators.
 
     Requires minimum 3 confluences to generate a signal.
+    scalp=True uses tighter ATR multipliers suited for 15m entries.
     Returns signal dict or None.
     """
     if len(df) < 50:
@@ -221,16 +222,22 @@ def detect_signal(df: pd.DataFrame) -> dict | None:
     entry = float(last["close"])
     atr = float(last["atr"])
 
-    if direction == "LONG":
-        stop_loss = entry - (atr * 1.5)
-        tp1 = entry + (atr * 1.5)
-        tp2 = entry + (atr * 2.5)
-        tp3 = entry + (atr * 4.0)
+    # Scalp: tighter levels for 15m; swing: wider for 1H+
+    if scalp:
+        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.0, 1.0, 1.8, 2.8
     else:
-        stop_loss = entry + (atr * 1.5)
-        tp1 = entry - (atr * 1.5)
-        tp2 = entry - (atr * 2.5)
-        tp3 = entry - (atr * 4.0)
+        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.5, 1.5, 2.5, 4.0
+
+    if direction == "LONG":
+        stop_loss = entry - (atr * sl_mult)
+        tp1 = entry + (atr * tp1_mult)
+        tp2 = entry + (atr * tp2_mult)
+        tp3 = entry + (atr * tp3_mult)
+    else:
+        stop_loss = entry + (atr * sl_mult)
+        tp1 = entry - (atr * tp1_mult)
+        tp2 = entry - (atr * tp2_mult)
+        tp3 = entry - (atr * tp3_mult)
 
     risk = abs(entry - stop_loss)
     reward = abs(tp2 - entry)
