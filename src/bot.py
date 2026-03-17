@@ -1,30 +1,41 @@
 """
-Bot BloFin — Main orchestrator.
+Bot BloFin — Orquestrador principal com integração Telegram completa.
 
-Runs the trading signal scanner, sends alerts via Telegram,
-tracks trades in real-time, and maintains performance records.
+Uso:
+    cd src && python bot.py
 """
 
 import asyncio
-import os
-import sys
 import logging
-import yaml
+import os
 
+import yaml
+from dotenv import load_dotenv
+from telegram import Bot, Update
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+from modules.chart_generator import create_chart, create_pnl_chart
+from modules.llm_analyst import analyze_signal
+from modules.performance import PerformanceDB
 from modules.scanner import scan_pairs
 from modules.tracker import TradeTracker
-from modules.performance import PerformanceDB
-from modules.llm_analyst import analyze_signal
-from modules.chart_generator import create_chart
 from utils.blofin_api import BloFinAPI
-from utils.formatters import format_signal_message, format_update_message, format_stats_message
+from utils.formatters import (
+    format_signal_message,
+    format_stats_message,
+    format_trades_list,
+    format_update_message,
+)
+
+load_dotenv()
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
-
 
 DEFAULT_PAIRS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
@@ -33,7 +44,6 @@ DEFAULT_PAIRS = [
 
 
 def load_config(path: str = "config.yaml") -> dict:
-    """Load YAML configuration file."""
     if os.path.exists(path):
         with open(path) as f:
             return yaml.safe_load(f) or {}
@@ -41,7 +51,7 @@ def load_config(path: str = "config.yaml") -> dict:
 
 
 class BloFinBot:
-    """Main bot orchestrator."""
+    """Orquestrador principal do bot com integração Telegram completa."""
 
     def __init__(self, config: dict = None):
         self.config = config or load_config()
@@ -49,82 +59,200 @@ class BloFinBot:
         self.db = PerformanceDB(self.config.get("db_path", "data/trades.db"))
         self.api = BloFinAPI()
         self.running = False
-        self._telegram_bot = None
 
-    async def start(self):
-        """Initialize and start the bot."""
-        logger.info("Starting BloFin Bot...")
-        await self.db.initialize()
-        self.running = True
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "")
+        self.ref_link = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
 
-        # Run scan loop
+        self._app: Application | None = None
+
+    # ------------------------------------------------------------------
+    # Envio de mensagens
+    # ------------------------------------------------------------------
+
+    async def _send(self, text: str, photo=None, chat_id: str = None):
+        """Envia mensagem ou foto ao canal configurado."""
+        target = chat_id or self.channel_id
+        if not target:
+            logger.warning("TELEGRAM_CHANNEL_ID não configurado — mensagem ignorada")
+            return
         try:
-            while self.running:
-                await self._scan_cycle()
-                await self._update_trades()
-                interval = self.config.get("scan_interval", 3600)
-                logger.info(f"Next scan in {interval}s")
-                await asyncio.sleep(interval)
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-        finally:
-            await self.shutdown()
+            bot: Bot = self._app.bot
+            if photo:
+                photo.seek(0)
+                await bot.send_photo(
+                    chat_id=target,
+                    photo=photo,
+                    caption=text[:1024],
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=target,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    disable_web_page_preview=True,
+                )
+        except TelegramError as e:
+            logger.error(f"Telegram erro ao enviar: {e}")
 
-    async def _scan_cycle(self):
-        """Run one scan cycle across all pairs."""
+    # ------------------------------------------------------------------
+    # Comandos
+    # ------------------------------------------------------------------
+
+    async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "👋 *BloFin Signal Bot* — Online\\!\n\n"
+            "Comandos disponíveis:\n"
+            "🔍 /scan — Escanear pares agora\n"
+            "📋 /trades — Trades ativos\n"
+            "📈 /stats — Performance \\(30 dias\\)\n"
+            "📊 /pnl — Gráfico de equity curve\n"
+            "⏹ /stop — Pausar scans automáticos\n"
+            "▶️ /resume — Retomar scans\n",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    async def cmd_scan(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        msg = await update.message.reply_text("🔍 Escaneando pares...")
+        count = await self._scan_cycle()
+        await msg.edit_text(f"✅ Scan concluído — {count} sinal(is) encontrado(s).")
+
+    async def cmd_trades(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        trades = self.tracker.get_all()
+        text = format_trades_list(trades)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    async def cmd_stats(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        stats = await self.db.get_stats()
+        text = format_stats_message(stats)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    async def cmd_pnl(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        trades = await self.db.get_recent_trades(limit=50)
+        if not trades:
+            await update.message.reply_text("📭 Nenhum trade registrado ainda.")
+            return
+        buf = create_pnl_chart(trades, self.config)
+        await update.message.reply_photo(photo=buf, caption="📊 Equity Curve")
+
+    async def cmd_stop(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        self.running = False
+        await update.message.reply_text("⏹ Scans automáticos pausados.")
+
+    async def cmd_resume(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        self.running = True
+        await update.message.reply_text("▶️ Scans automáticos retomados.")
+
+    # ------------------------------------------------------------------
+    # Lógica principal
+    # ------------------------------------------------------------------
+
+    async def _scan_cycle(self) -> int:
+        """Escaneia todos os pares e envia sinais ao canal. Retorna nº de sinais."""
         pairs = self.config.get("pairs", DEFAULT_PAIRS)
         bar = self.config.get("timeframe", "1H")
-        logger.info(f"Scanning {len(pairs)} pairs on {bar}...")
+        logger.info(f"Escaneando {len(pairs)} pares em {bar}...")
 
         signals = await scan_pairs(pairs, bar=bar)
-        logger.info(f"Found {len(signals)} signals")
+        logger.info(f"{len(signals)} sinal(is) encontrado(s)")
 
         for signal in signals:
-            # Add to tracker
             self.tracker.add_trade(signal)
-
-            # Generate analysis
             analysis = await analyze_signal(signal)
+            chart_buf = create_chart(signal, self.config)
+            msg = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link)
+            logger.info(f"Sinal: {signal['pair']} {signal['direction']} score={signal.get('score')}")
+            await self._send(msg, photo=chart_buf)
 
-            # Generate chart
-            chart_cfg = self.config.get("chart", {"chart": {}})
-            chart_buf = create_chart(signal, {"chart": chart_cfg})
-
-            # Format message
-            ref_link = self.config.get("ref_link", "")
-            msg = format_signal_message(signal, analysis=analysis, ref_link=ref_link)
-            logger.info(f"Signal: {signal['pair']} {signal['direction']} (score: {signal['score']})")
+        return len(signals)
 
     async def _update_trades(self):
-        """Update prices for active trades."""
+        """Verifica SL/TP nos trades ativos."""
         for pair, trade in list(self.tracker.active_trades.items()):
             try:
                 ticker = await self.api.get_ticker(pair)
-                if ticker:
-                    price = float(ticker.get("last", 0))
-                    event = trade.check_levels(price)
-                    if event:
-                        logger.info(f"{event} on {pair} at {price}")
-                        # Save to DB if trade closed
-                        if event in ("SL_HIT", "TP3_HIT"):
-                            await self.db.save_trade(trade.to_dict())
-                            self.tracker.remove_trade(pair)
+                if not ticker:
+                    continue
+                price = float(ticker.get("last", 0))
+                event = trade.check_levels(price)
+                if event:
+                    logger.info(f"{event} em {pair} @ {price}")
+                    msg = format_update_message(pair, event, trade.to_dict())
+                    await self._send(msg)
+                    if event in ("SL_HIT", "TP3_HIT"):
+                        await self.db.save_trade(trade.to_dict())
+                        self.tracker.remove_trade(pair)
             except Exception as e:
-                logger.error(f"Error updating {pair}: {e}")
+                logger.error(f"Erro atualizando {pair}: {e}")
 
-    async def shutdown(self):
-        """Clean shutdown."""
-        self.running = False
-        await self.api.close()
-        await self.db.close()
-        logger.info("Bot shut down")
+    async def _background_loop(self):
+        """Loop de background: scan periódico + atualização de trades."""
+        interval = self.config.get("scan_interval", 3600)
+        logger.info(f"Background loop iniciado (intervalo: {interval}s)")
+        while True:
+            try:
+                if self.running:
+                    await self._scan_cycle()
+                    await self._update_trades()
+            except Exception as e:
+                logger.error(f"Erro no ciclo: {e}")
+            await asyncio.sleep(interval)
+
+    # ------------------------------------------------------------------
+    # Inicialização
+    # ------------------------------------------------------------------
+
+    async def run(self):
+        """Inicializa o bot Telegram e o loop de scanning."""
+        if not self.token:
+            raise ValueError("TELEGRAM_BOT_TOKEN não definido no .env")
+
+        await self.db.initialize()
+        self.running = True
+
+        self._app = Application.builder().token(self.token).build()
+
+        self._app.add_handler(CommandHandler("start", self.cmd_start))
+        self._app.add_handler(CommandHandler("scan", self.cmd_scan))
+        self._app.add_handler(CommandHandler("trades", self.cmd_trades))
+        self._app.add_handler(CommandHandler("stats", self.cmd_stats))
+        self._app.add_handler(CommandHandler("pnl", self.cmd_pnl))
+        self._app.add_handler(CommandHandler("stop", self.cmd_stop))
+        self._app.add_handler(CommandHandler("resume", self.cmd_resume))
+
+        logger.info("Bot iniciando...")
+
+        async with self._app:
+            await self._app.start()
+            await self._app.updater.start_polling(drop_pending_updates=True)
+
+            scan_task = asyncio.create_task(self._background_loop())
+            logger.info("Bot rodando. Pressione Ctrl+C para parar.")
+
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
+            finally:
+                scan_task.cancel()
+                try:
+                    await scan_task
+                except asyncio.CancelledError:
+                    pass
+                await self._app.updater.stop()
+                await self._app.stop()
+                await self.api.close()
+                await self.db.close()
+                logger.info("Bot encerrado.")
 
 
-async def main():
+def main():
     config = load_config()
     bot = BloFinBot(config)
-    await bot.start()
+    asyncio.run(bot.run())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
