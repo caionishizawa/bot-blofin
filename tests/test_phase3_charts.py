@@ -8,12 +8,32 @@ Generates a test chart PNG to verify visual output.
 import asyncio
 import sys
 import os
+import time
+
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from utils.blofin_api import BloFinAPI
 from utils.indicators import candles_to_df, add_all_indicators, detect_signal
 from modules.chart_generator import create_chart, create_pnl_chart
+
+
+def generate_mock_candles(n=200, base_price=90000.0):
+    """Generate synthetic BTC-like OHLCV candles."""
+    candles = []
+    price = base_price
+    ts = int(time.time() * 1000) - n * 3600000
+    for i in range(n):
+        change = np.random.normal(0, 0.008) * price
+        open_ = price
+        close = price + change
+        high = max(open_, close) * (1 + abs(np.random.normal(0, 0.003)))
+        low = min(open_, close) * (1 - abs(np.random.normal(0, 0.003)))
+        vol = np.random.uniform(100, 1000)
+        candles.append([str(ts), str(open_), str(high), str(low), str(close), str(vol)])
+        price = close
+        ts += 3600000
+    return candles
 
 
 TEST_CONFIG = {
@@ -30,9 +50,7 @@ TEST_CONFIG = {
 
 async def test_signal_chart():
     """Test generating a signal chart."""
-    api = BloFinAPI()
-    candles = await api.get_candles("BTC-USDT", bar="1H", limit=200)
-    await api.close()
+    candles = generate_mock_candles(n=200, base_price=90000.0)
 
     df = candles_to_df(candles)
     df = add_all_indicators(df)

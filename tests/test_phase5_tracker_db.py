@@ -51,7 +51,6 @@ def test_active_trade_long():
     assert trade.status == TradeStatus.TP3_HIT
 
     print(f"  ✅ LONG trade: all levels detected correctly")
-    return True
 
 
 def test_active_trade_short():
@@ -77,7 +76,6 @@ def test_active_trade_short():
     assert trade.status == TradeStatus.SL_HIT
 
     print(f"  ✅ SHORT trade: SL detection correct")
-    return True
 
 
 def test_trade_serialization():
@@ -100,7 +98,6 @@ def test_trade_serialization():
     assert "opened_at" in d
 
     print(f"  ✅ Trade serialization works")
-    return True
 
 
 # ─── Performance DB Tests ───────────────────────────────────
