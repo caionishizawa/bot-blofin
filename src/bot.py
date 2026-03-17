@@ -38,8 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_PAIRS = [
-    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
-    "ADA-USDT", "AVAX-USDT", "LINK-USDT", "DOT-USDT", "MATIC-USDT",
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "BNB-USDT",
+    "DOGE-USDT", "ADA-USDT", "AVAX-USDT", "LINK-USDT", "DOT-USDT",
+    "MATIC-USDT", "LTC-USDT", "NEAR-USDT", "OP-USDT", "ARB-USDT",
+    "APT-USDT", "TRX-USDT", "ATOM-USDT", "INJ-USDT", "FIL-USDT",
 ]
 
 
@@ -80,12 +82,23 @@ class BloFinBot:
             bot: Bot = self._app.bot
             if photo:
                 photo.seek(0)
+                # Telegram caption limit: 1024 chars
+                caption = text[:1024] if text else ""
                 await bot.send_photo(
                     chat_id=target,
                     photo=photo,
-                    caption=text[:1024],
+                    caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
                 )
+                # If full text exceeds caption limit, send remainder as message
+                if len(text) > 1024:
+                    remainder = text[1024:]
+                    await bot.send_message(
+                        chat_id=target,
+                        text=remainder,
+                        parse_mode=ParseMode.MARKDOWN,
+                        disable_web_page_preview=True,
+                    )
             else:
                 await bot.send_message(
                     chat_id=target,
@@ -102,15 +115,15 @@ class BloFinBot:
 
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "👋 *BloFin Signal Bot* — Online\\!\n\n"
+            "👋 *BloFin Signal Bot* — Online!\n\n"
             "Comandos disponíveis:\n"
             "🔍 /scan — Escanear pares agora\n"
             "📋 /trades — Trades ativos\n"
-            "📈 /stats — Performance \\(30 dias\\)\n"
+            "📈 /stats — Performance (30 dias)\n"
             "📊 /pnl — Gráfico de equity curve\n"
             "⏹ /stop — Pausar scans automáticos\n"
             "▶️ /resume — Retomar scans\n",
-            parse_mode=ParseMode.MARKDOWN_V2,
+            parse_mode=ParseMode.MARKDOWN,
         )
 
     async def cmd_scan(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -134,7 +147,7 @@ class BloFinBot:
             await update.message.reply_text("📭 Nenhum trade registrado ainda.")
             return
         buf = create_pnl_chart(trades, self.config)
-        await update.message.reply_photo(photo=buf, caption="📊 Equity Curve")
+        await update.message.reply_photo(photo=buf, caption="📊 *Equity Curve — NPK Sinais*", parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_stop(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         self.running = False
@@ -152,20 +165,43 @@ class BloFinBot:
         """Escaneia todos os pares e envia sinais ao canal. Retorna nº de sinais."""
         pairs = self.config.get("pairs", DEFAULT_PAIRS)
         bar = self.config.get("timeframe", "1H")
+        min_rr = self.config.get("min_rr", 1.5)
+        max_rr = self.config.get("max_rr", 4.0)
+        min_confidence = self.config.get("min_confidence", 50)
+
         logger.info(f"Escaneando {len(pairs)} pares em {bar}...")
-
         signals = await scan_pairs(pairs, bar=bar)
-        logger.info(f"{len(signals)} sinal(is) encontrado(s)")
+        logger.info(f"{len(signals)} sinal(is) bruto(s) encontrado(s)")
 
-        for signal in signals:
+        # Filter by quality
+        filtered = [
+            s for s in signals
+            if s.get("rr_ratio", 0) >= min_rr
+            and s.get("rr_ratio", 0) <= max_rr
+            and s.get("confidence", 0) >= min_confidence
+        ]
+        logger.info(f"{len(filtered)} sinal(is) após filtro (RR {min_rr}-{max_rr}, conf ≥{min_confidence}%)")
+
+        for signal in filtered:
+            # Register in tracker
             self.tracker.add_trade(signal)
+
+            # Claude AI analysis
             analysis = await analyze_signal(signal)
+
+            # Generate chart
             chart_buf = create_chart(signal, self.config)
+
+            # Format message
             msg = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link)
-            logger.info(f"Sinal: {signal['pair']} {signal['direction']} score={signal.get('score')}")
+
+            logger.info(
+                f"Sinal: {signal['pair']} {signal['direction']} "
+                f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')}"
+            )
             await self._send(msg, photo=chart_buf)
 
-        return len(signals)
+        return len(filtered)
 
     async def _update_trades(self):
         """Verifica SL/TP nos trades ativos."""
@@ -177,27 +213,44 @@ class BloFinBot:
                 price = float(ticker.get("last", 0))
                 event = trade.check_levels(price)
                 if event:
-                    logger.info(f"{event} em {pair} @ {price}")
-                    msg = format_update_message(pair, event, trade.to_dict())
+                    trade_dict = trade.to_dict()
+                    logger.info(f"{event} em {pair} @ {price} | PNL: {trade_dict['pnl_pct']:+.2f}%")
+                    msg = format_update_message(pair, event, trade_dict)
                     await self._send(msg)
+
+                    # Save to DB on close (SL or TP3), save on any TP for partial tracking
+                    await self.db.save_trade(trade_dict)
+
+                    # Remove from active only on final events
                     if event in ("SL_HIT", "TP3_HIT"):
-                        await self.db.save_trade(trade.to_dict())
                         self.tracker.remove_trade(pair)
+
             except Exception as e:
                 logger.error(f"Erro atualizando {pair}: {e}")
 
     async def _background_loop(self):
         """Loop de background: scan periódico + atualização de trades."""
         interval = self.config.get("scan_interval", 3600)
-        logger.info(f"Background loop iniciado (intervalo: {interval}s)")
+        update_interval = self.config.get("update_interval", 60)
+        logger.info(f"Background loop iniciado (scan: {interval}s, update: {update_interval}s)")
+
+        scan_counter = 0
         while True:
             try:
                 if self.running:
-                    await self._scan_cycle()
+                    # Update active trades every tick
                     await self._update_trades()
+
+                    # Run full scan every N ticks
+                    scan_counter += 1
+                    if scan_counter >= (interval // update_interval):
+                        scan_counter = 0
+                        await self._scan_cycle()
+
             except Exception as e:
                 logger.error(f"Erro no ciclo: {e}")
-            await asyncio.sleep(interval)
+
+            await asyncio.sleep(update_interval)
 
     # ------------------------------------------------------------------
     # Inicialização
@@ -227,7 +280,7 @@ class BloFinBot:
             await self._app.start()
             await self._app.updater.start_polling(drop_pending_updates=True)
 
-            scan_task = asyncio.create_task(self._background_loop())
+            bg_task = asyncio.create_task(self._background_loop())
             logger.info("Bot rodando. Pressione Ctrl+C para parar.")
 
             try:
@@ -236,9 +289,9 @@ class BloFinBot:
             except (KeyboardInterrupt, asyncio.CancelledError):
                 pass
             finally:
-                scan_task.cancel()
+                bg_task.cancel()
                 try:
-                    await scan_task
+                    await bg_task
                 except asyncio.CancelledError:
                     pass
                 await self._app.updater.stop()

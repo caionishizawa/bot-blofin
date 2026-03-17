@@ -1,0 +1,51 @@
+# ─── NPK Sinais — BloFin Bot Configuration ────────────────────────────────────
+
+# Pairs to scan
+pairs:
+  - BTC-USDT
+  - ETH-USDT
+  - SOL-USDT
+  - XRP-USDT
+  - BNB-USDT
+  - DOGE-USDT
+  - ADA-USDT
+  - AVAX-USDT
+  - LINK-USDT
+  - DOT-USDT
+  - MATIC-USDT
+  - LTC-USDT
+  - NEAR-USDT
+  - OP-USDT
+  - ARB-USDT
+  - APT-USDT
+  - TRX-USDT
+  - ATOM-USDT
+  - INJ-USDT
+  - FIL-USDT
+
+# Timeframe for signal scanning
+timeframe: "1H"
+
+# Scan interval in seconds (3600 = 1 hour)
+scan_interval: 3600
+
+# Price update check interval in seconds
+update_interval: 60
+
+# Signal quality filters
+min_rr: 1.5          # Minimum Risk:Reward ratio
+max_rr: 4.0          # Maximum Risk:Reward ratio
+min_confidence: 50   # Minimum confidence % (0-100)
+
+# Database path (relative to src/)
+db_path: "data/trades.db"
+
+# BloFin referral link (overrides .env if set)
+ref_link: ""
+
+# Chart settings
+chart:
+  width: 1200
+  height: 900
+  candles: 80
+  watermark: "NPK Sinais"
