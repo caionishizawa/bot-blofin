@@ -11,8 +11,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from utils.blofin_api import BloFinAPI
 from utils.indicators import candles_to_df, add_all_indicators, detect_signal
+from conftest import requires_network
 
 
+@requires_network
 async def test_candles_to_df():
     """Test converting BloFin candles to DataFrame."""
     api = BloFinAPI()
@@ -29,6 +31,7 @@ async def test_candles_to_df():
     return df
 
 
+@requires_network
 async def test_indicators(df=None):
     """Test adding all indicators."""
     if df is None:
@@ -51,6 +54,7 @@ async def test_indicators(df=None):
     return df
 
 
+@requires_network
 async def test_signal_detection(df=None):
     """Test signal detection logic."""
     if df is None:
@@ -82,6 +86,7 @@ async def test_signal_detection(df=None):
     return signal
 
 
+@requires_network
 async def test_multi_pair_scan():
     """Test scanning multiple pairs."""
     api = BloFinAPI()
