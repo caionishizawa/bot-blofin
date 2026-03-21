@@ -7,8 +7,12 @@ and detects trading signals via confluence logic.
 All indicators are calculated with pandas/numpy (no external TA library needed).
 """
 
+import logging
+
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def candles_to_df(candles: list) -> pd.DataFrame:
@@ -44,8 +48,11 @@ def _rsi(series: pd.Series, window: int = 14) -> pd.Series:
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / window, min_periods=window).mean()
     avg_loss = loss.ewm(alpha=1 / window, min_periods=window).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    # Guard: when avg_loss == 0, RSI = 100 (pure uptrend)
+    avg_loss_safe = avg_loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss_safe
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(100)
 
 
 def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
@@ -87,10 +94,16 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14):
 
     atr_val = _atr(high, low, close, window)
 
-    plus_di = 100 * _ema(plus_dm, window) / atr_val
-    minus_di = 100 * _ema(minus_dm, window) / atr_val
+    plus_di = 100 * _ema(plus_dm, window) / atr_val.replace(0, np.nan)
+    minus_di = 100 * _ema(minus_dm, window) / atr_val.replace(0, np.nan)
 
-    dx = (plus_di - minus_di).abs() / (plus_di + minus_di) * 100
+    plus_di = plus_di.fillna(0)
+    minus_di = minus_di.fillna(0)
+
+    # Guard: avoid division by zero when both DI values are 0
+    denom = (plus_di + minus_di).replace(0, np.nan)
+    dx = (plus_di - minus_di).abs() / denom * 100
+    dx = dx.fillna(0)
     adx_val = _ema(dx, window)
 
     return adx_val, plus_di, minus_di
@@ -120,7 +133,7 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_upper"] = bb_upper
     df["bb_mid"] = bb_mid
     df["bb_lower"] = bb_lower
-    df["bb_width"] = (bb_upper - bb_lower) / bb_mid
+    df["bb_width"] = (bb_upper - bb_lower) / bb_mid.replace(0, np.nan)
 
     # ATR
     df["atr"] = _atr(high, low, close, 14)
@@ -150,7 +163,7 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
     # Skip if key indicators are NaN
     required = ["ema9", "ema21", "rsi", "macd", "macd_signal", "adx", "atr", "bb_upper", "bb_lower"]
     for col in required:
-        if col not in df.columns or pd.isna(last.get(col)):
+        if col not in df.columns or pd.isna(last[col]):
             return None
 
     long_reasons = []
@@ -198,13 +211,11 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
         else:
             short_reasons.append(f"Strong bearish trend (ADX={last['adx']:.1f})")
 
-    # 6. Volume confirmation
+    # 6. Volume confirmation — independent from direction bias
     vol_avg = df["volume"].rolling(20).mean().iloc[-1]
     if not pd.isna(vol_avg) and vol_avg > 0 and last["volume"] > vol_avg * 1.2:
-        if len(long_reasons) >= len(short_reasons):
-            long_reasons.append("Volume above average")
-        else:
-            short_reasons.append("Volume above average")
+        long_reasons.append("Volume above average")
+        short_reasons.append("Volume above average")
 
     # Determine direction
     min_confluence = 3
@@ -221,6 +232,10 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
     # Calculate entry, SL, TP levels
     entry = float(last["close"])
     atr = float(last["atr"])
+
+    if atr <= 0:
+        logger.warning("ATR is zero or negative — skipping signal")
+        return None
 
     # Scalp: tighter levels for 15m; swing: wider for 1H+
     if scalp:
@@ -240,10 +255,10 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
         tp3 = entry - (atr * tp3_mult)
 
     risk = abs(entry - stop_loss)
-    reward = abs(tp2 - entry)
+    reward = abs(tp3 - entry)  # Use TP3 for accurate R:R
     rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
 
-    score = float(len(reasons))
+    score = len(reasons)
     confidence = min(100, int((score / 6) * 100))
 
     return {

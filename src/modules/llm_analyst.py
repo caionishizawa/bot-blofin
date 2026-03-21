@@ -2,8 +2,12 @@
 LLM Analyst — Claude AI integration for trade analysis in PT-BR.
 """
 
+import logging
 import os
 
+import anthropic as _anthropic
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """Analista técnico de cripto. Responda SOMENTE em texto limpo, sem markdown.
 
@@ -23,7 +27,7 @@ Sem explicações. Só fatos e o trade."""
 async def analyze_signal(signal: dict, api_key: str = None) -> str:
     """Analyze a trading signal using Claude AI.
 
-    Falls back to template-based analysis if no API key.
+    Falls back to template-based analysis if no API key or if LLM fails.
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
 
@@ -31,16 +35,14 @@ async def analyze_signal(signal: dict, api_key: str = None) -> str:
         try:
             return await _analyze_with_claude(signal, api_key)
         except Exception as e:
-            print(f"LLM analysis failed, using fallback: {e}")
+            logger.warning(f"LLM analysis failed, using fallback: {e}")
 
     return _fallback_analysis(signal)
 
 
 async def _analyze_with_claude(signal: dict, api_key: str) -> str:
     """Call Claude API for analysis."""
-    import anthropic
-
-    client = anthropic.AsyncAnthropic(api_key=api_key)
+    client = _anthropic.AsyncAnthropic(api_key=api_key)
     prompt = ANALYSIS_PROMPT.format(
         pair=signal.get("pair", "N/A"),
         direction=signal.get("direction", "N/A"),

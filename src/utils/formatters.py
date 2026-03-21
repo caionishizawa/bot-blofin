@@ -26,18 +26,25 @@ def _rr_label(rr: float) -> str:
     return "Baixo"
 
 
+def _escape_md(text: str) -> str:
+    """Escape Telegram MarkdownV1 special characters."""
+    for ch in ["_", "*", "`", "[", "]", "(", ")"]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def format_signal_message(signal: dict, analysis: str = "", ref_link: str = "") -> str:
     """Format a new signal message for Telegram — clean aesthetic card."""
     direction = signal["direction"]
     pair = signal.get("pair", "N/A")
     tf = signal.get("timeframe", "1H")
-    entry = signal.get("entry", 0)
-    sl = signal.get("stop_loss", 0)
-    tp1 = signal.get("tp1", 0)
-    tp2 = signal.get("tp2", 0)
-    tp3 = signal.get("tp3", 0)
+    entry = signal.get("entry") or 0
+    sl = signal.get("stop_loss") or 0
+    tp1 = signal.get("tp1") or 0
+    tp2 = signal.get("tp2") or 0
+    tp3 = signal.get("tp3") or 0
     confidence = signal.get("confidence", 0)
-    rr = signal.get("rr_ratio", 0)
+    rr = signal.get("rr_ratio") or 0
     score = signal.get("score", 0)
 
     if direction == "LONG":
@@ -71,8 +78,7 @@ def format_signal_message(signal: dict, analysis: str = "", ref_link: str = "") 
     ]
 
     if analysis:
-        # Escape underscores in analysis to avoid Telegram Markdown parse errors
-        safe_analysis = analysis.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+        safe_analysis = _escape_md(analysis)
         lines.append(f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄")
         lines.append(f"🤖 *Análise IA:*")
         lines.append(safe_analysis)
@@ -87,19 +93,20 @@ def format_signal_message(signal: dict, analysis: str = "", ref_link: str = "") 
 def format_update_message(pair: str, event: str, trade: dict) -> str:
     """Format a trade update (TP/SL hit) message — aesthetic result card."""
     event_configs = {
-        "TP1_HIT": ("🎯", "TP1 ATINGIDO", True),
-        "TP2_HIT": ("🎯🎯", "TP2 ATINGIDO", True),
-        "TP3_HIT": ("🏆", "TP3 ATINGIDO — FULL TARGET", True),
-        "SL_HIT":  ("🛑", "STOP ATIVADO", False),
+        "TP1_HIT": ("🎯",    "TP1 ATINGIDO",             True),
+        "TP2_HIT": ("🎯🎯", "TP2 ATINGIDO",              True),
+        "TP3_HIT": ("🏆",    "TP3 ATINGIDO — FULL TARGET", True),
+        "SL_HIT":  ("🛑",    "STOP ATIVADO",              False),
     }
     emoji, label, is_win = event_configs.get(event, ("📢", event.replace("_", " "), True))
 
-    entry = trade.get("entry", 0)
-    exit_price = trade.get("exit_price", trade.get("current_price", 0))
-    pnl = trade.get("pnl_pct", 0)
+    entry = trade.get("entry") or 0
+    exit_price = trade.get("exit_price") or trade.get("current_price") or 0
+    pnl = trade.get("pnl_pct") or 0
     direction = trade.get("direction", "LONG")
     opened_at = trade.get("opened_at", "")
-    rr = trade.get("rr_ratio", 0)
+    rr = trade.get("rr_ratio")
+    duration_seconds = trade.get("duration_seconds")
 
     pnl_emoji = "✅" if pnl >= 0 else "❌"
     pnl_str = f"+{pnl:.2f}%" if pnl >= 0 else f"{pnl:.2f}%"
@@ -114,10 +121,16 @@ def format_update_message(pair: str, event: str, trade: dict) -> str:
         f"{pnl_emoji} *PNL: `{pnl_str}`*",
     ]
 
-    if rr:
+    if rr is not None and rr > 0:
         lines.append(f"⚖️ *R:R realizado:* `{rr}:1`")
 
-    if opened_at:
+    # Duration from stored seconds (precise) or from timestamps
+    if duration_seconds is not None:
+        hours = int(duration_seconds // 3600)
+        mins = int((duration_seconds % 3600) // 60)
+        duration = f"{hours}h {mins}m" if hours else f"{mins}m"
+        lines.append(f"⏱ *Duração:* {duration}")
+    elif opened_at:
         try:
             opened = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
@@ -143,10 +156,12 @@ def format_stats_message(stats: dict) -> str:
     pf = stats.get("profit_factor", 0.0)
     avg_win = stats.get("avg_win", 0.0)
     avg_loss = stats.get("avg_loss", 0.0)
+    avg_dur = stats.get("avg_duration_hours", 0.0)
 
     wr_bar = _bar(round(wr / 10))
     pnl_emoji = "📈" if total_pnl >= 0 else "📉"
     pnl_str = f"+{total_pnl:.2f}%" if total_pnl >= 0 else f"{total_pnl:.2f}%"
+    pf_str = "999+" if pf >= 999 else f"{pf:.2f}"
 
     lines = [
         f"📊 *Performance — Últimos 30 dias*",
@@ -156,10 +171,11 @@ def format_stats_message(stats: dict) -> str:
         f"🎯 *Win Rate:* {wr_bar} {wr:.1f}%",
         f"{pnl_emoji} *PNL Total:* `{pnl_str}`",
         f"",
-        f"📐 *Profit Factor:* `{pf:.2f}`",
+        f"📐 *Profit Factor:* `{pf_str}`",
         f"📉 *Max Drawdown:* `{max_dd:.1f}%`",
         f"",
         f"💚 *Avg Win:* `+{avg_win:.2f}%`  •  💔 *Avg Loss:* `{avg_loss:.2f}%`",
+        f"⏱ *Duração média:* {avg_dur:.1f}h",
     ]
 
     return "\n".join(lines)
@@ -173,11 +189,11 @@ def format_trades_list(trades: list) -> str:
     lines = [f"📋 *Trades Ativos* ({len(trades)})", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     for t in trades:
         emoji = "🟢" if t["direction"] == "LONG" else "🔴"
-        pnl = t.get("pnl_pct", 0)
+        pnl = t.get("pnl_pct") or 0
         pnl_str = f"+{pnl:.1f}%" if pnl >= 0 else f"{pnl:.1f}%"
         pnl_icon = "✅" if pnl >= 0 else "❌"
-        entry = t.get("entry", 0)
-        current = t.get("current_price", entry)
+        entry = t.get("entry") or 0
+        current = t.get("current_price") or entry
         lines.append(
             f"{emoji} `{t['pair']}` — {t['direction']}  {pnl_icon} `{pnl_str}`\n"
             f"   _Entrada: {entry:,.2f}  •  Atual: {current:,.2f}_"

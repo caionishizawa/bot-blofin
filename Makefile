@@ -1,4 +1,4 @@
-.PHONY: help install test test-phase1 test-phase2 test-phase3 test-phase5 run lint clean
+.PHONY: help install test test-phase1 test-phase2 test-phase3 test-phase5 run run-web lint clean docker-up docker-down docker-logs
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -28,6 +28,21 @@ test-phase5:  ## Test Tracker + Performance DB
 run:  ## Run the bot
 	cd src && python bot.py
 
+run-web:  ## Run the dashboard web server (dev)
+	cd src && uvicorn web.app:app --host 0.0.0.0 --port 8000 --reload
+
+docker-up:  ## Start all services with Docker Compose
+	docker compose up -d
+
+docker-down:  ## Stop all Docker services
+	docker compose down
+
+docker-logs:  ## Follow Docker logs
+	docker compose logs -f
+
+docker-build:  ## Rebuild Docker images
+	docker compose build --no-cache
+
 lint:  ## Check code style
 	python -m py_compile src/bot.py
 	python -m py_compile src/modules/scanner.py
@@ -38,6 +53,9 @@ lint:  ## Check code style
 	python -m py_compile src/utils/blofin_api.py
 	python -m py_compile src/utils/indicators.py
 	python -m py_compile src/utils/formatters.py
+	python -m py_compile src/modules/share_pnl.py
+	python -m py_compile src/web/app.py
+	python -m py_compile src/web/auth.py
 	@echo "✅ All files compile OK"
 
 clean:  ## Clean generated files

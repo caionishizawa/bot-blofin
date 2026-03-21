@@ -3,8 +3,12 @@ Scanner Module — scans multiple pairs for trading signals.
 """
 
 import asyncio
+import logging
+
 from utils.blofin_api import BloFinAPI
 from utils.indicators import candles_to_df, add_all_indicators, detect_signal
+
+logger = logging.getLogger(__name__)
 
 # Max allowed drift between candle close (entry) and current market price
 MAX_ENTRY_DRIFT_PCT = 1.5
@@ -31,13 +35,16 @@ async def scan_pairs(pairs: list, bar: str = "1H", limit: int = 200, delay: floa
                         if current_price > 0:
                             drift_pct = abs(current_price - signal["entry"]) / signal["entry"] * 100
                             if drift_pct > MAX_ENTRY_DRIFT_PCT:
-                                print(f"Skipping {pair}: entry {signal['entry']:.2f} drifted {drift_pct:.1f}% from market {current_price:.2f}")
+                                logger.warning(
+                                    f"Skipping {pair}: entry {signal['entry']:.2f} "
+                                    f"drifted {drift_pct:.1f}% from market {current_price:.2f}"
+                                )
                                 await asyncio.sleep(delay)
                                 continue
                             # Use current price as entry for accuracy
                             signal["entry"] = current_price
-                    except Exception:
-                        pass  # Keep candle-based entry if ticker fails
+                    except Exception as e:
+                        logger.warning(f"Ticker fetch failed for {pair}, using candle entry: {e}")
 
                     signal["pair"] = pair
                     signal["timeframe"] = bar
@@ -45,7 +52,7 @@ async def scan_pairs(pairs: list, bar: str = "1H", limit: int = 200, delay: floa
                     signals.append(signal)
             await asyncio.sleep(delay)
         except Exception as e:
-            print(f"Error scanning {pair}: {e}")
+            logger.error(f"Error scanning {pair}: {e}")
 
     await api.close()
     return signals

@@ -15,15 +15,6 @@ class TradeStatus(Enum):
     SL_HIT  = "sl_hit"
 
 
-# PnL mapping: what % of the move is realized at each event
-_TP_EXIT_PRICE_KEY = {
-    "TP1_HIT": "tp1",
-    "TP2_HIT": "tp2",
-    "TP3_HIT": "tp3",
-    "SL_HIT":  "stop_loss",
-}
-
-
 class ActiveTrade:
     """Tracks a single active trade with level detection."""
 
@@ -48,6 +39,7 @@ class ActiveTrade:
         self.exit_price: float | None = None
         self.opened_at     = datetime.now(timezone.utc).isoformat()
         self.closed_at: str | None = None
+        self.duration_seconds: float | None = None
 
         self.tp1_hit = False
         self.tp2_hit = False
@@ -64,89 +56,103 @@ class ActiveTrade:
             return ((self.entry - ref) / self.entry) * 100
 
     def _close(self, exit_price: float):
-        """Record closing price and timestamp."""
+        """Record closing price, timestamp and duration."""
         self.exit_price = exit_price
         self.closed_at = datetime.now(timezone.utc).isoformat()
+        try:
+            opened = datetime.fromisoformat(self.opened_at)
+            closed = datetime.fromisoformat(self.closed_at)
+            self.duration_seconds = (closed - opened).total_seconds()
+        except Exception:
+            self.duration_seconds = None
 
     def check_levels(self, price: float) -> str | None:
         """Check if price has hit any SL/TP level.
 
+        Checks TP1 → TP2 → TP3 in sequence so partial targets fire in order.
+        SL is checked first as it has priority.
         Returns event string or None. On hit, records exit_price and closed_at.
         """
         self.current_price = price
 
         if self.direction == "LONG":
+            # SL has top priority
             if not self.sl_hit and price <= self.stop_loss:
                 self.sl_hit = True
                 self.status = TradeStatus.SL_HIT
                 self._close(self.stop_loss)
                 return "SL_HIT"
-            if not self.tp3_hit and price >= self.tp3:
-                self.tp3_hit = True
-                self.status = TradeStatus.TP3_HIT
-                self._close(self.tp3)
-                return "TP3_HIT"
-            if not self.tp2_hit and price >= self.tp2:
-                self.tp2_hit = True
-                self.status = TradeStatus.TP2_HIT
-                self._close(self.tp2)
-                return "TP2_HIT"
+            # TPs fire in ascending order (TP1 → TP2 → TP3)
             if not self.tp1_hit and price >= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
                 self._close(self.tp1)
                 return "TP1_HIT"
+            if self.tp1_hit and not self.tp2_hit and price >= self.tp2:
+                self.tp2_hit = True
+                self.status = TradeStatus.TP2_HIT
+                self._close(self.tp2)
+                return "TP2_HIT"
+            if self.tp2_hit and not self.tp3_hit and price >= self.tp3:
+                self.tp3_hit = True
+                self.status = TradeStatus.TP3_HIT
+                self._close(self.tp3)
+                return "TP3_HIT"
+
         else:  # SHORT
+            # SL has top priority
             if not self.sl_hit and price >= self.stop_loss:
                 self.sl_hit = True
                 self.status = TradeStatus.SL_HIT
                 self._close(self.stop_loss)
                 return "SL_HIT"
-            if not self.tp3_hit and price <= self.tp3:
-                self.tp3_hit = True
-                self.status = TradeStatus.TP3_HIT
-                self._close(self.tp3)
-                return "TP3_HIT"
-            if not self.tp2_hit and price <= self.tp2:
-                self.tp2_hit = True
-                self.status = TradeStatus.TP2_HIT
-                self._close(self.tp2)
-                return "TP2_HIT"
+            # TPs fire in descending order (TP1 → TP2 → TP3)
             if not self.tp1_hit and price <= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
                 self._close(self.tp1)
                 return "TP1_HIT"
+            if self.tp1_hit and not self.tp2_hit and price <= self.tp2:
+                self.tp2_hit = True
+                self.status = TradeStatus.TP2_HIT
+                self._close(self.tp2)
+                return "TP2_HIT"
+            if self.tp2_hit and not self.tp3_hit and price <= self.tp3:
+                self.tp3_hit = True
+                self.status = TradeStatus.TP3_HIT
+                self._close(self.tp3)
+                return "TP3_HIT"
 
         return None
 
     def to_dict(self) -> dict:
         """Serialize trade to dictionary."""
         return {
-            "id":            self.id,
-            "pair":          self.pair,
-            "direction":     self.direction,
-            "entry":         self.entry,
-            "stop_loss":     self.stop_loss,
-            "tp1":           self.tp1,
-            "tp2":           self.tp2,
-            "tp3":           self.tp3,
-            "risk_pct":      self.risk_pct,
-            "rr_ratio":      self.rr_ratio,
-            "confidence":    self.confidence,
-            "score":         self.score,
-            "reasons":       self.reasons,
-            "timeframe":     self.timeframe,
-            "status":        self.status.value,
-            "current_price": self.current_price,
-            "exit_price":    self.exit_price,
-            "pnl_pct":       round(self.pnl_pct, 3),
-            "opened_at":     self.opened_at,
-            "closed_at":     self.closed_at,
-            "tp1_hit":       self.tp1_hit,
-            "tp2_hit":       self.tp2_hit,
-            "tp3_hit":       self.tp3_hit,
-            "sl_hit":        self.sl_hit,
+            "id":               self.id,
+            "pair":             self.pair,
+            "direction":        self.direction,
+            "entry":            self.entry,
+            "stop_loss":        self.stop_loss,
+            "tp1":              self.tp1,
+            "tp2":              self.tp2,
+            "tp3":              self.tp3,
+            "risk_pct":         self.risk_pct,
+            "rr_ratio":         self.rr_ratio,
+            "confidence":       self.confidence,
+            "score":            self.score,
+            "reasons":          self.reasons,
+            "timeframe":        self.timeframe,
+            "status":           self.status.value,
+            "current_price":    self.current_price,
+            "exit_price":       self.exit_price,
+            "pnl_pct":          round(self.pnl_pct, 2),
+            "opened_at":        self.opened_at,
+            "closed_at":        self.closed_at,
+            "duration_seconds": self.duration_seconds,
+            "tp1_hit":          self.tp1_hit,
+            "tp2_hit":          self.tp2_hit,
+            "tp3_hit":          self.tp3_hit,
+            "sl_hit":           self.sl_hit,
         }
 
 

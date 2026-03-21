@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NPK Sinais — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --panel:    #161b22;
+      --panel2:   #1c2128;
+      --border:   #30363d;
+      --text:     #c9d1d9;
+      --dim:      #8b949e;
+      --green:    #3fb950;
+      --red:      #f85149;
+      --blue:     #58a6ff;
+      --orange:   #d29922;
+      --purple:   #bc8cff;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+    .card2 { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+    .badge-green { background: #3fb95022; color: var(--green); border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+    .badge-red   { background: #f8514922; color: var(--red);   border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+    .badge-blue  { background: #58a6ff22; color: var(--blue);  border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+    input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 10px 14px; width: 100%; outline: none; }
+    input:focus { border-color: var(--blue); }
+    .btn-primary { background: var(--blue); color: #000; border: none; border-radius: 6px; padding: 10px 20px; cursor: pointer; font-weight: 600; width: 100%; }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-sm { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+    .btn-sm:hover { border-color: var(--blue); color: var(--blue); }
+    table { width: 100%; border-collapse: collapse; }
+    th { color: var(--dim); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+    td { padding: 10px 12px; border-bottom: 1px solid #21262d; font-size: 13px; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1c212840; }
+    .stat-val { font-size: 26px; font-weight: 700; }
+    .stat-label { font-size: 12px; color: var(--dim); margin-top: 2px; }
+    .scrollable { overflow-y: auto; max-height: 400px; }
+    ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    #login-screen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    #app { display: none; }
+    .pnl-pos { color: var(--green); } .pnl-neg { color: var(--red); }
+    .dir-long { color: var(--green); } .dir-short { color: var(--red); }
+    .tag-tp3 { background: #3fb95022; color: var(--green); } .tag-sl { background: #f8514922; color: var(--red); }
+    .tag-open { background: #58a6ff22; color: var(--blue); }
+    canvas { max-height: 280px; }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <div class="card" style="width:360px;padding:36px;">
+    <div style="text-align:center;margin-bottom:28px;">
+      <div style="font-size:22px;font-weight:700;color:var(--text);">NPK Sinais</div>
+      <div style="font-size:13px;color:var(--dim);margin-top:4px;">Trading Dashboard</div>
+    </div>
+    <div style="margin-bottom:14px;">
+      <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px;">Usuário</label>
+      <input id="inp-user" type="text" placeholder="username" autocomplete="username" />
+    </div>
+    <div style="margin-bottom:20px;">
+      <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px;">Senha</label>
+      <input id="inp-pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+    <button class="btn-primary" onclick="doLogin()">Entrar</button>
+    <div id="login-err" style="color:var(--red);font-size:12px;text-align:center;margin-top:10px;display:none;"></div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app">
+  <!-- Navbar -->
+  <nav style="background:var(--panel);border-bottom:1px solid var(--border);padding:0 24px;height:52px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-weight:700;font-size:15px;">NPK Sinais</span>
+      <span class="badge-blue">Dashboard</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="nav-user" style="font-size:13px;color:var(--dim);"></span>
+      <button class="btn-sm" onclick="refreshAll()">↻ Atualizar</button>
+      <button class="btn-sm" onclick="doLogout()">Sair</button>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <div style="padding:24px;max-width:1400px;margin:0 auto;">
+
+    <!-- Stats row -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:20px;" id="stats-cards">
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-total">—</div><div class="stat-label">Total Trades</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-wr">—</div><div class="stat-label">Win Rate</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-pnl">—</div><div class="stat-label">PNL 30 dias</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-pf">—</div><div class="stat-label">Profit Factor</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-dd">—</div><div class="stat-label">Max Drawdown</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-today">—</div><div class="stat-label">Trades Hoje</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-avgwin">—</div><div class="stat-label">Avg Win</div></div>
+      <div class="card" style="padding:18px;"><div class="stat-val" id="s-dur">—</div><div class="stat-label">Duração Média</div></div>
+    </div>
+
+    <!-- Charts row -->
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:20px;">
+      <div class="card" style="padding:18px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:14px;color:var(--dim);">EQUITY CURVE</div>
+        <canvas id="chart-equity"></canvas>
+      </div>
+      <div class="card" style="padding:18px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:14px;color:var(--dim);">TRADES POR DIA (30d)</div>
+        <canvas id="chart-daily"></canvas>
+      </div>
+    </div>
+
+    <!-- Share PNL button -->
+    <div class="card" style="padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+      <div>
+        <span style="font-size:14px;font-weight:600;">Card de Resultados</span>
+        <span style="font-size:12px;color:var(--dim);margin-left:8px;">Gere um card para compartilhar</span>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <select id="pnl-days" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:13px;">
+          <option value="7">7 dias</option>
+          <option value="30" selected>30 dias</option>
+          <option value="90">90 dias</option>
+        </select>
+        <button class="btn-sm" onclick="downloadShareCard()" style="background:#3fb95022;border-color:var(--green);color:var(--green);">⬇ Baixar Card</button>
+      </div>
+    </div>
+
+    <!-- Trades table -->
+    <div class="card" style="padding:18px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:13px;font-weight:600;color:var(--dim);">HISTÓRICO DE TRADES</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="filter-pair" type="text" placeholder="Filtrar par..." style="width:140px;padding:6px 10px;font-size:13px;" oninput="filterTrades()" />
+          <select id="filter-dir" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:13px;" onchange="filterTrades()">
+            <option value="">Todos</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+          <select id="filter-status" style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:13px;" onchange="filterTrades()">
+            <option value="">Todos Status</option>
+            <option value="tp3_hit">TP3 ✅</option>
+            <option value="tp2_hit">TP2</option>
+            <option value="tp1_hit">TP1</option>
+            <option value="sl_hit">SL ❌</option>
+            <option value="open">Aberto</option>
+          </select>
+        </div>
+      </div>
+      <div class="scrollable">
+        <table>
+          <thead>
+            <tr>
+              <th>Par</th>
+              <th>Dir</th>
+              <th>Entrada</th>
+              <th>Saída</th>
+              <th>PNL</th>
+              <th>R:R</th>
+              <th>Conf</th>
+              <th>Status</th>
+              <th>Duração</th>
+              <th>Data</th>
+            </tr>
+          </thead>
+          <tbody id="trades-tbody"></tbody>
+        </table>
+      </div>
+      <div id="trades-count" style="font-size:12px;color:var(--dim);margin-top:10px;text-align:right;"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────
+let TOKEN = localStorage.getItem('npk_token') || '';
+let USERNAME = localStorage.getItem('npk_user') || '';
+let ALL_TRADES = [];
+let chartEquity = null;
+let chartDaily = null;
+
+// ─── Init ─────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('inp-pass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('inp-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('inp-pass').focus(); });
+  if (TOKEN) showApp();
+});
+
+function showApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('nav-user').textContent = `👤 ${USERNAME}`;
+  refreshAll();
+}
+
+function showLogin() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────
+async function doLogin() {
+  const user = document.getElementById('inp-user').value.trim();
+  const pass = document.getElementById('inp-pass').value.trim();
+  const errEl = document.getElementById('login-err');
+  errEl.style.display = 'none';
+  if (!user || !pass) { errEl.textContent = 'Preencha usuário e senha.'; errEl.style.display = 'block'; return; }
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: user, password: pass}),
+    });
+    if (!r.ok) { const d = await r.json(); errEl.textContent = d.detail || 'Credenciais inválidas.'; errEl.style.display = 'block'; return; }
+    const d = await r.json();
+    TOKEN = d.token;
+    USERNAME = d.username;
+    localStorage.setItem('npk_token', TOKEN);
+    localStorage.setItem('npk_user', USERNAME);
+    showApp();
+  } catch (e) { errEl.textContent = 'Erro de conexão.'; errEl.style.display = 'block'; }
+}
+
+function doLogout() {
+  TOKEN = ''; USERNAME = '';
+  localStorage.removeItem('npk_token');
+  localStorage.removeItem('npk_user');
+  showLogin();
+}
+
+// ─── API ──────────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(path, {headers: {'Authorization': `Bearer ${TOKEN}`}});
+  if (r.status === 401) { doLogout(); throw new Error('Unauthorized'); }
+  if (!r.ok) throw new Error(`API error ${r.status}`);
+  return r.json();
+}
+
+// ─── Refresh ──────────────────────────────────────────────────────────
+async function refreshAll() {
+  await Promise.all([loadStats(), loadEquity(), loadDaily(), loadTrades()]);
+}
+
+// ─── Stats ────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const [stats, today] = await Promise.all([api('/api/stats?days=30'), api('/api/today')]);
+    const pnl = stats.total_pnl || 0;
+    const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const wr = stats.win_rate || 0;
+    const wrColor = wr >= 55 ? 'var(--green)' : wr >= 40 ? 'var(--orange)' : 'var(--red)';
+    const pf = stats.profit_factor || 0;
+    const dd = stats.max_drawdown || 0;
+
+    setText('s-total', stats.total_trades || 0, 'var(--text)');
+    setText('s-wr', wr.toFixed(1) + '%', wrColor);
+    setText('s-pnl', pnlStr, pnlColor);
+    setText('s-pf', pf >= 999 ? '999+' : pf.toFixed(2), pf >= 1.5 ? 'var(--green)' : 'var(--orange)');
+    setText('s-dd', dd.toFixed(1) + '%', dd > 20 ? 'var(--red)' : 'var(--text)');
+    setText('s-today', today.trades_today || 0, 'var(--blue)');
+    const aw = stats.avg_win || 0;
+    setText('s-avgwin', '+' + aw.toFixed(2) + '%', 'var(--green)');
+    setText('s-dur', (stats.avg_duration_hours || 0).toFixed(1) + 'h', 'var(--text)');
+  } catch(e) { console.error('Stats error', e); }
+}
+
+function setText(id, val, color) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = val; if (color) el.style.color = color; }
+}
+
+// ─── Equity Chart ─────────────────────────────────────────────────────
+async function loadEquity() {
+  try {
+    const data = await api('/api/equity?limit=200');
+    const labels = data.map(d => d.date || '');
+    const cumulative = data.map(d => d.cumulative);
+    const perTrade = data.map(d => d.pnl);
+
+    const ctx = document.getElementById('chart-equity').getContext('2d');
+    if (chartEquity) chartEquity.destroy();
+    chartEquity = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'PNL Acumulado %',
+          data: cumulative,
+          borderColor: '#58a6ff',
+          backgroundColor: (ctx) => {
+            const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 280);
+            g.addColorStop(0, '#58a6ff22');
+            g.addColorStop(1, '#58a6ff05');
+            return g;
+          },
+          borderWidth: 2,
+          fill: true,
+          tension: 0.3,
+          pointRadius: data.length < 30 ? 4 : 0,
+          pointBackgroundColor: cumulative.map(v => v >= 0 ? '#3fb950' : '#f85149'),
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+          tooltip: {
+            backgroundColor: '#1c2128',
+            borderColor: '#30363d',
+            borderWidth: 1,
+            titleColor: '#c9d1d9',
+            bodyColor: '#8b949e',
+            callbacks: {
+              label: (ctx) => ` ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}%`,
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 10 }, grid: { color: '#21262d' } },
+          y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => v.toFixed(1) + '%' }, grid: { color: '#21262d' } },
+        },
+      },
+    });
+  } catch(e) { console.error('Equity chart error', e); }
+}
+
+// ─── Daily Chart ──────────────────────────────────────────────────────
+async function loadDaily() {
+  try {
+    const data = await api('/api/daily?days=30');
+    const labels = data.map(d => d.trade_date || '');
+    const counts = data.map(d => d.trades_count);
+    const pnls = data.map(d => d.pnl_sum);
+
+    const ctx = document.getElementById('chart-daily').getContext('2d');
+    if (chartDaily) chartDaily.destroy();
+    chartDaily = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Trades',
+            data: counts,
+            backgroundColor: '#58a6ff55',
+            borderColor: '#58a6ff',
+            borderWidth: 1,
+            yAxisID: 'y',
+          },
+          {
+            label: 'PNL %',
+            data: pnls,
+            type: 'line',
+            borderColor: (ctx) => {
+              const v = ctx.parsed?.y ?? 0;
+              return v >= 0 ? '#3fb950' : '#f85149';
+            },
+            segment: {
+              borderColor: ctx => ctx.p1.parsed.y >= 0 ? '#3fb950' : '#f85149',
+            },
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            tension: 0.3,
+            pointRadius: 3,
+            yAxisID: 'y2',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { labels: { color: '#8b949e', font: { size: 10 } } },
+          tooltip: { backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1, titleColor: '#c9d1d9', bodyColor: '#8b949e' },
+        },
+        scales: {
+          x: { ticks: { color: '#8b949e', font: { size: 9 }, maxRotation: 45 }, grid: { color: '#21262d' } },
+          y:  { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' }, position: 'left' },
+          y2: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => v.toFixed(1) + '%' }, grid: { display: false }, position: 'right' },
+        },
+      },
+    });
+  } catch(e) { console.error('Daily chart error', e); }
+}
+
+// ─── Trades Table ─────────────────────────────────────────────────────
+async function loadTrades() {
+  try {
+    ALL_TRADES = await api('/api/trades?limit=200');
+    filterTrades();
+  } catch(e) { console.error('Trades error', e); }
+}
+
+function filterTrades() {
+  const pairFilter = (document.getElementById('filter-pair').value || '').toUpperCase();
+  const dirFilter = document.getElementById('filter-dir').value;
+  const statusFilter = document.getElementById('filter-status').value;
+
+  const filtered = ALL_TRADES.filter(t => {
+    if (pairFilter && !t.pair.includes(pairFilter)) return false;
+    if (dirFilter && t.direction !== dirFilter) return false;
+    if (statusFilter && t.status !== statusFilter) return false;
+    return true;
+  });
+
+  renderTrades(filtered);
+}
+
+function renderTrades(trades) {
+  const tbody = document.getElementById('trades-tbody');
+  const countEl = document.getElementById('trades-count');
+  if (!trades.length) { tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--dim);padding:24px;">Nenhum trade encontrado.</td></tr>'; countEl.textContent = ''; return; }
+
+  const rows = trades.map(t => {
+    const pnl = t.pnl_pct || 0;
+    const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%';
+    const pnlClass = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    const dirClass = t.direction === 'LONG' ? 'dir-long' : 'dir-short';
+    const entry = (t.entry || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6});
+    const exit = t.exit_price ? t.exit_price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6}) : '—';
+    const rr = t.rr_ratio ? t.rr_ratio.toFixed(1) + ':1' : '—';
+    const conf = t.confidence ? t.confidence + '%' : '—';
+    const dur = formatDuration(t.duration_seconds);
+    const date = t.closed_at ? t.closed_at.slice(0, 16).replace('T', ' ') : (t.opened_at || '').slice(0, 16).replace('T', ' ');
+
+    let statusBadge = '';
+    if (t.status === 'tp3_hit') statusBadge = '<span class="badge-green">TP3</span>';
+    else if (t.status === 'tp2_hit') statusBadge = '<span class="badge-green" style="opacity:.7">TP2</span>';
+    else if (t.status === 'tp1_hit') statusBadge = '<span class="badge-blue">TP1</span>';
+    else if (t.status === 'sl_hit') statusBadge = '<span class="badge-red">SL</span>';
+    else statusBadge = '<span class="badge-blue">Aberto</span>';
+
+    return `<tr>
+      <td style="font-weight:600;">${t.pair}</td>
+      <td class="${dirClass}" style="font-weight:600;">${t.direction}</td>
+      <td>${entry}</td>
+      <td>${exit}</td>
+      <td class="${pnlClass}" style="font-weight:700;">${pnlStr}</td>
+      <td style="color:var(--dim);">${rr}</td>
+      <td style="color:var(--dim);">${conf}</td>
+      <td>${statusBadge}</td>
+      <td style="color:var(--dim);">${dur}</td>
+      <td style="color:var(--dim);font-size:12px;">${date}</td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = rows.join('');
+  countEl.textContent = `${trades.length} trades exibidos`;
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return '—';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+// ─── Share Card ───────────────────────────────────────────────────────
+async function downloadShareCard() {
+  const days = document.getElementById('pnl-days').value;
+  const url = `/api/sharepnl?days=${days}`;
+  const r = await fetch(url, {headers: {'Authorization': `Bearer ${TOKEN}`}});
+  if (!r.ok) { alert('Erro ao gerar card.'); return; }
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `npk-sinais-pnl-${days}d-${new Date().toISOString().slice(0,10)}.png`;
+  a.click();
+}
+
+// ─── Auto-refresh every 60s ───────────────────────────────────────────
+setInterval(() => { if (TOKEN && document.getElementById('app').style.display !== 'none') refreshAll(); }, 60000);
+</script>
+</body>
+</html>

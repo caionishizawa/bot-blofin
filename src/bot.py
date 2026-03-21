@@ -8,6 +8,7 @@ Uso:
 import asyncio
 import logging
 import os
+import time
 
 import yaml
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from modules.chart_generator import create_chart, create_pnl_chart
 from modules.llm_analyst import analyze_signal
 from modules.performance import PerformanceDB
 from modules.scanner import scan_pairs
+from modules.share_pnl import create_share_card
 from modules.tracker import TradeTracker
 from utils.blofin_api import BloFinAPI
 from utils.formatters import (
@@ -31,9 +33,12 @@ from utils.formatters import (
 
 load_dotenv()
 
+# Fix: getattr converts "INFO" string to logging.INFO integer correctly
+_log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_str, logging.INFO)
 logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=_log_level,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,7 @@ class BloFinBot:
         self.ref_link = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
 
         self._app: Application | None = None
+        self._last_scan_time: float = 0.0  # timestamp of last full scan
 
     # ------------------------------------------------------------------
     # Envio de mensagens
@@ -119,8 +125,9 @@ class BloFinBot:
             "Comandos disponíveis:\n"
             "🔍 /scan — Escanear pares agora\n"
             "📋 /trades — Trades ativos\n"
-            "📈 /stats — Performance (30 dias)\n"
+            "📈 /stats — Performance \\(30 dias\\)\n"
             "📊 /pnl — Gráfico de equity curve\n"
+            "🏆 /sharepnl — Card de resultados para compartilhar\n"
             "⏹ /stop — Pausar scans automáticos\n"
             "▶️ /resume — Retomar scans\n",
             parse_mode=ParseMode.MARKDOWN,
@@ -147,7 +154,30 @@ class BloFinBot:
             await update.message.reply_text("📭 Nenhum trade registrado ainda.")
             return
         buf = create_pnl_chart(trades, self.config)
-        await update.message.reply_photo(photo=buf, caption="📊 *Equity Curve — NPK Sinais*", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_photo(
+            photo=buf,
+            caption="📊 *Equity Curve — NPK Sinais*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def cmd_sharepnl(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Gera card de PNL para compartilhar."""
+        stats = await self.db.get_stats()
+        if stats.get("total_trades", 0) == 0:
+            await update.message.reply_text("📭 Nenhum trade registrado ainda.")
+            return
+        recent = await self.db.get_recent_trades(limit=20)
+        watermark = self.config.get("chart", {}).get("watermark", "NPK Sinais")
+        buf = create_share_card(stats, recent, watermark=watermark)
+        total_pnl = stats.get("total_pnl", 0)
+        pnl_str = f"+{total_pnl:.2f}%" if total_pnl >= 0 else f"{total_pnl:.2f}%"
+        await update.message.reply_photo(
+            photo=buf,
+            caption=f"🏆 *NPK Sinais — Resultados*\n\n"
+                    f"📈 PNL: *{pnl_str}*  •  Win Rate: *{stats.get('win_rate', 0):.1f}%*\n"
+                    f"📋 Trades: {stats.get('total_trades', 0)}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
     async def cmd_stop(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         self.running = False
@@ -176,8 +206,7 @@ class BloFinBot:
         # Filter by quality
         filtered = [
             s for s in signals
-            if s.get("rr_ratio", 0) >= min_rr
-            and s.get("rr_ratio", 0) <= max_rr
+            if min_rr <= s.get("rr_ratio", 0) <= max_rr
             and s.get("confidence", 0) >= min_confidence
         ]
         logger.info(f"{len(filtered)} sinal(is) após filtro (RR {min_rr}-{max_rr}, conf ≥{min_confidence}%)")
@@ -204,21 +233,24 @@ class BloFinBot:
         return len(filtered)
 
     async def _update_trades(self):
-        """Verifica SL/TP nos trades ativos."""
+        """Verifica SL/TP nos trades ativos e salva fechados no DB."""
         for pair, trade in list(self.tracker.active_trades.items()):
             try:
                 ticker = await self.api.get_ticker(pair)
                 if not ticker:
                     continue
                 price = float(ticker.get("last", 0))
+                if price <= 0:
+                    continue
+
                 event = trade.check_levels(price)
                 if event:
                     trade_dict = trade.to_dict()
-                    logger.info(f"{event} em {pair} @ {price} | PNL: {trade_dict['pnl_pct']:+.2f}%")
+                    logger.info(f"{event} em {pair} @ {price:.4f} | PNL: {trade_dict['pnl_pct']:+.2f}%")
                     msg = format_update_message(pair, event, trade_dict)
                     await self._send(msg)
 
-                    # Save to DB on close (SL or TP3), save on any TP for partial tracking
+                    # Save to DB on every level hit (upsert — last status wins)
                     await self.db.save_trade(trade_dict)
 
                     # Remove from active only on final events
@@ -230,25 +262,27 @@ class BloFinBot:
 
     async def _background_loop(self):
         """Loop de background: scan periódico + atualização de trades."""
-        interval = self.config.get("scan_interval", 3600)
+        scan_interval = self.config.get("scan_interval", 3600)
         update_interval = self.config.get("update_interval", 60)
-        logger.info(f"Background loop iniciado (scan: {interval}s, update: {update_interval}s)")
+        logger.info(f"Background loop iniciado (scan: {scan_interval}s, update: {update_interval}s)")
 
-        scan_counter = 0
+        # Run first scan immediately on startup
+        self._last_scan_time = 0.0
+
         while True:
             try:
                 if self.running:
                     # Update active trades every tick
                     await self._update_trades()
 
-                    # Run full scan every N ticks
-                    scan_counter += 1
-                    if scan_counter >= (interval // update_interval):
-                        scan_counter = 0
+                    # Run full scan when interval has elapsed (time-based, not counter-based)
+                    now = time.monotonic()
+                    if now - self._last_scan_time >= scan_interval:
+                        self._last_scan_time = now
                         await self._scan_cycle()
 
             except Exception as e:
-                logger.error(f"Erro no ciclo: {e}")
+                logger.error(f"Erro no ciclo principal: {e}", exc_info=True)
 
             await asyncio.sleep(update_interval)
 
@@ -266,13 +300,14 @@ class BloFinBot:
 
         self._app = Application.builder().token(self.token).build()
 
-        self._app.add_handler(CommandHandler("start", self.cmd_start))
-        self._app.add_handler(CommandHandler("scan", self.cmd_scan))
-        self._app.add_handler(CommandHandler("trades", self.cmd_trades))
-        self._app.add_handler(CommandHandler("stats", self.cmd_stats))
-        self._app.add_handler(CommandHandler("pnl", self.cmd_pnl))
-        self._app.add_handler(CommandHandler("stop", self.cmd_stop))
-        self._app.add_handler(CommandHandler("resume", self.cmd_resume))
+        self._app.add_handler(CommandHandler("start",    self.cmd_start))
+        self._app.add_handler(CommandHandler("scan",     self.cmd_scan))
+        self._app.add_handler(CommandHandler("trades",   self.cmd_trades))
+        self._app.add_handler(CommandHandler("stats",    self.cmd_stats))
+        self._app.add_handler(CommandHandler("pnl",      self.cmd_pnl))
+        self._app.add_handler(CommandHandler("sharepnl", self.cmd_sharepnl))
+        self._app.add_handler(CommandHandler("stop",     self.cmd_stop))
+        self._app.add_handler(CommandHandler("resume",   self.cmd_resume))
 
         logger.info("Bot iniciando...")
 
