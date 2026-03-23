@@ -125,26 +125,21 @@ def create_chart(signal: dict, config: dict) -> io.BytesIO | None:
     tp2 = signal.get("tp2")
     tp3 = signal.get("tp3")
 
-    if entry and sl:
-        ax_price.fill_between(x, sl, entry, color=COLORS["sl_dim"], alpha=1, zorder=1)
-    if entry and tp3:
-        ax_price.fill_between(x, entry, tp3, color=COLORS["tp_dim"], alpha=1, zorder=1)
-
     # ─── Signal lines + labels ──────────────────────────────────
     if entry:
-        ax_price.axhline(entry, color=COLORS["entry"], linestyle="--", linewidth=1.5, zorder=4, alpha=0.95)
+        ax_price.axhline(entry, color=COLORS["entry"], linestyle="--", linewidth=1.2, zorder=4, alpha=0.85)
         _price_label(ax_price, entry, "ENTRY", COLORS["entry"], x_max)
     if sl:
-        ax_price.axhline(sl, color=COLORS["sl"], linestyle="--", linewidth=1.2, zorder=4, alpha=0.9)
+        ax_price.axhline(sl, color=COLORS["sl"], linestyle="--", linewidth=0.8, zorder=4, alpha=0.55)
         _price_label(ax_price, sl, "SL", COLORS["sl"], x_max)
     if tp1:
-        ax_price.axhline(tp1, color=COLORS["tp"], linestyle=":", linewidth=0.9, zorder=4, alpha=0.55)
+        ax_price.axhline(tp1, color=COLORS["tp"], linestyle="-", linewidth=0.8, zorder=4, alpha=0.55)
         _price_label(ax_price, tp1, "TP1", COLORS["tp"], x_max)
     if tp2:
-        ax_price.axhline(tp2, color=COLORS["tp"], linestyle=":", linewidth=1.0, zorder=4, alpha=0.75)
+        ax_price.axhline(tp2, color=COLORS["tp"], linestyle="-", linewidth=0.9, zorder=4, alpha=0.75)
         _price_label(ax_price, tp2, "TP2", COLORS["tp"], x_max)
     if tp3:
-        ax_price.axhline(tp3, color=COLORS["tp"], linestyle=":", linewidth=1.2, zorder=4, alpha=0.95)
+        ax_price.axhline(tp3, color=COLORS["tp"], linestyle="-", linewidth=1.1, zorder=4, alpha=0.95)
         _price_label(ax_price, tp3, "TP3", COLORS["tp"], x_max)
 
     # ─── Legend ────────────────────────────────────────────────

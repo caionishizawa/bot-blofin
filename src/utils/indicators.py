@@ -243,8 +243,13 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
     reward = abs(tp2 - entry)
     rr_ratio = round(reward / risk, 2) if risk > 0 else 0.0
 
-    score = float(len(reasons))
-    confidence = min(100, int((score / 6) * 100))
+    # Score 0-10: signals start at 7.1 (3 confluences) and go up to 10.0 (7 confluences).
+    # Formula: 5.0 base + (reasons / 7) * 5.0 — keeps distribution in the 7-10 range
+    # since the scanner already requires min 3 confluences to emit a signal.
+    MAX_REASONS = 7.0
+    score_10 = round(5.0 + (len(reasons) / MAX_REASONS) * 5.0, 1)
+    score_10 = min(10.0, score_10)
+    confidence = min(100, int(score_10 * 10))
 
     return {
         "direction": direction,
@@ -253,8 +258,9 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
-        "score": score,
+        "score": score_10,
         "confidence": confidence,
         "rr_ratio": rr_ratio,
+        "risk_pct": 2.0,   # % da banca arriscada por trade (fixo — sobrescrito pelo config)
         "reasons": reasons,
     }

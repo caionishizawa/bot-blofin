@@ -29,8 +29,9 @@ timeframe: "1H"
 # Scan interval in seconds (3600 = 1 hour)
 scan_interval: 3600
 
-# Price update check interval in seconds
-update_interval: 60
+# Price update check interval in seconds (300 = 5 min)
+# Verifica SL/TP a cada 5 min — só grava/notifica se evento acontecer
+update_interval: 300
 
 # Signal quality filters
 min_rr: 1.5          # Minimum Risk:Reward ratio
@@ -40,8 +41,15 @@ min_confidence: 50   # Minimum confidence % (0-100)
 # Database path (relative to src/)
 db_path: "data/trades.db"
 
+# Bankroll / risk management
+starting_bankroll: 1000   # USDT — troque para 500 se preferir
+risk_pct_per_trade: 2.0   # % da banca arriscada por trade
+
 # BloFin referral link (overrides .env if set)
 ref_link: ""
+
+# Dashboard web
+dashboard_port: 8080
 
 # Chart settings
 chart:

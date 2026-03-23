@@ -109,15 +109,25 @@ class BloFinAPI:
         return books[0]
 
     async def get_mark_price(self, pair: str) -> float:
-        """Fetch mark price for a pair."""
+        """Fetch mark price for a single pair."""
         data = await self._request("GET", "/api/v1/market/mark-price", params={"instId": pair})
         items = data.get("data", [])
         if not items:
             return 0.0
         return float(items[0].get("markPrice", 0))
 
+    async def get_all_mark_prices(self) -> dict:
+        """Fetch mark prices for ALL pairs in a single API call.
+
+        Returns dict: { "BTC-USDT": 84200.5, "ETH-USDT": 3200.1, ... }
+        """
+        data = await self._request("GET", "/api/v1/market/mark-price")
+        items = data.get("data", [])
+        return {item["instId"]: float(item.get("markPrice", 0))
+                for item in items if item.get("instId") and item.get("markPrice")}
+
     async def get_multi_tickers(self, pairs: list) -> dict:
-        """Fetch tickers for multiple pairs."""
+        """Fetch tickers for multiple pairs in parallel."""
         result = {}
         tasks = [self.get_ticker(pair) for pair in pairs]
         tickers = await asyncio.gather(*tasks, return_exceptions=True)

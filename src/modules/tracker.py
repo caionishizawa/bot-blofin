@@ -63,6 +63,31 @@ class ActiveTrade:
         else:
             return ((self.entry - ref) / self.entry) * 100
 
+    def unrealized_pnl_usd(self, bankroll: float) -> float:
+        """PNL não realizado da posição ainda aberta, em USD.
+
+        Considera o sizing parcial (TP1=50%, TP2=30%, TP3=20%):
+        após TP1, só 50% da posição segue aberta; após TP2, só 20%.
+        """
+        sl_dist = abs(self.entry - self.stop_loss)
+        if sl_dist == 0 or self.entry == 0:
+            return 0.0
+
+        risk_amount = bankroll * self.risk_pct / 100
+
+        # % da posição ainda aberta
+        remaining = 1.0 - (0.50 if self.tp1_hit else 0.0) - (0.30 if self.tp2_hit else 0.0)
+        if remaining <= 0 or self.sl_hit or self.tp3_hit:
+            return 0.0
+
+        if self.direction == "LONG":
+            price_move = self.current_price - self.entry
+        else:
+            price_move = self.entry - self.current_price
+
+        rr_current = price_move / sl_dist
+        return round(risk_amount * rr_current * remaining, 2)
+
     def _close(self, exit_price: float):
         """Record closing price and timestamp."""
         self.exit_price = exit_price

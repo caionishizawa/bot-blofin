@@ -1,5 +1,5 @@
 """
-Utilitário para descobrir o TELEGRAM_CHANNEL_ID do seu grupo/canal.
+Utilitario para descobrir o TELEGRAM_CHANNEL_ID do seu grupo/canal.
 
 Como usar:
   1. Adicione o bot ao seu grupo/canal e torne-o ADMINISTRADOR
@@ -11,6 +11,10 @@ Como usar:
 import asyncio
 import os
 import sys
+
+# Fix Windows console encoding
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

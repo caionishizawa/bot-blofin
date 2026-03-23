@@ -38,31 +38,130 @@ class PerformanceDB:
                 status      TEXT NOT NULL,
                 exit_price  REAL,
                 pnl_pct     REAL DEFAULT 0.0,
+                pnl_usd     REAL DEFAULT 0.0,
+                tp1_hit     INTEGER DEFAULT 0,
+                tp2_hit     INTEGER DEFAULT 0,
+                tp3_hit     INTEGER DEFAULT 0,
+                sl_hit      INTEGER DEFAULT 0,
                 opened_at   TEXT NOT NULL,
                 closed_at   TEXT
             )
         """)
-        # Add rr_ratio column if upgrading from old schema
-        try:
-            await self._db.execute("ALTER TABLE trades ADD COLUMN rr_ratio REAL DEFAULT 0.0")
-        except Exception:
-            pass
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                chat_id   TEXT PRIMARY KEY,
+                title     TEXT,
+                enabled   INTEGER DEFAULT 1,
+                added_at  TEXT NOT NULL
+            )
+        """)
+        # Migrations for older schemas
+        for col, definition in [
+            ("rr_ratio", "REAL DEFAULT 0.0"),
+            ("pnl_usd",  "REAL DEFAULT 0.0"),
+            ("tp1_hit",  "INTEGER DEFAULT 0"),
+            ("tp2_hit",  "INTEGER DEFAULT 0"),
+            ("tp3_hit",  "INTEGER DEFAULT 0"),
+            ("sl_hit",   "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                await self._db.execute(f"ALTER TABLE trades ADD COLUMN {col} {definition}")
+            except Exception:
+                pass
         await self._db.commit()
 
-    async def save_trade(self, trade: dict):
+    async def enable_group(self, chat_id: str, title: str = ""):
+        """Register or re-enable a group for signal broadcasting."""
+        await self._db.execute("""
+            INSERT INTO groups (chat_id, title, enabled, added_at)
+            VALUES (?, ?, 1, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET enabled=1, title=excluded.title
+        """, (str(chat_id), title, datetime.now(timezone.utc).isoformat()))
+        await self._db.commit()
+
+    async def disable_group(self, chat_id: str):
+        """Disable signal broadcasting for a group."""
+        await self._db.execute(
+            "UPDATE groups SET enabled=0 WHERE chat_id=?", (str(chat_id),)
+        )
+        await self._db.commit()
+
+    async def get_enabled_groups(self) -> list:
+        """Return list of dicts for all enabled groups."""
+        cursor = await self._db.execute(
+            "SELECT chat_id, title FROM groups WHERE enabled=1"
+        )
+        rows = await cursor.fetchall()
+        return [{"chat_id": r[0], "title": r[1]} for r in rows]
+
+    async def list_groups(self) -> list:
+        """Return all registered groups with their status."""
+        cursor = await self._db.execute(
+            "SELECT chat_id, title, enabled FROM groups ORDER BY added_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [{"chat_id": r[0], "title": r[1], "enabled": bool(r[2])} for r in rows]
+
+    @staticmethod
+    def calc_pnl_usd(trade: dict, bankroll: float) -> float:
+        """Calcula PNL em USD considerando fechamentos parciais por TP level.
+
+        Modelo de risco fixo:
+          • Cada trade arrisca `risk_pct`% da banca (ex: 2% de $1000 = $20)
+          • TP1 fecha 30% da posição, TP2 40%, TP3 30%
+          • SL fecha o restante em perda total do valor arriscado
+        """
+        risk_pct = trade.get("risk_pct", 2.0)
+        risk_amount = bankroll * risk_pct / 100
+
+        entry     = trade.get("entry", 0)
+        stop_loss = trade.get("stop_loss", 0)
+        tp1       = trade.get("tp1", 0)
+        tp2       = trade.get("tp2", 0)
+        tp3       = trade.get("tp3", 0)
+
+        if not entry or not stop_loss:
+            return 0.0
+        sl_dist = abs(entry - stop_loss)
+        if sl_dist == 0:
+            return 0.0
+
+        tp1_hit = bool(trade.get("tp1_hit", False))
+        tp2_hit = bool(trade.get("tp2_hit", False))
+        tp3_hit = bool(trade.get("tp3_hit", False))
+        sl_hit  = bool(trade.get("sl_hit",  False))
+
+        # TP sizing: TP1=50%, TP2=30%, TP3=20%
+        pnl = 0.0
+        if tp1_hit and tp1:
+            pnl += risk_amount * (abs(tp1 - entry) / sl_dist) * 0.50
+        if tp2_hit and tp2:
+            pnl += risk_amount * (abs(tp2 - entry) / sl_dist) * 0.30
+        if tp3_hit and tp3:
+            pnl += risk_amount * (abs(tp3 - entry) / sl_dist) * 0.20
+        if sl_hit:
+            remaining = 1.0 - (0.50 if tp1_hit else 0) - (0.30 if tp2_hit else 0)
+            pnl -= risk_amount * remaining
+
+        return round(pnl, 2)
+
+    async def save_trade(self, trade: dict, bankroll: float = 1000.0):
         """Insert or replace a trade record."""
         reasons = trade.get("reasons", [])
         if isinstance(reasons, list):
             reasons = json.dumps(reasons)
 
         trade_id = trade.get("id") or str(uuid.uuid4())
+        pnl_usd  = self.calc_pnl_usd(trade, bankroll)
 
         await self._db.execute("""
             INSERT OR REPLACE INTO trades
             (id, pair, direction, entry, stop_loss, tp1, tp2, tp3,
              risk_pct, rr_ratio, confidence, score, reasons,
-             status, exit_price, pnl_pct, opened_at, closed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             status, exit_price, pnl_pct, pnl_usd,
+             tp1_hit, tp2_hit, tp3_hit, sl_hit,
+             opened_at, closed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade_id,
             trade["pair"],
@@ -80,11 +179,25 @@ class PerformanceDB:
             trade["status"],
             trade.get("exit_price"),
             trade.get("pnl_pct", 0.0),
+            pnl_usd,
+            int(bool(trade.get("tp1_hit", False))),
+            int(bool(trade.get("tp2_hit", False))),
+            int(bool(trade.get("tp3_hit", False))),
+            int(bool(trade.get("sl_hit",  False))),
             trade.get("opened_at", datetime.now(timezone.utc).isoformat()),
             trade.get("closed_at"),
         ))
         await self._db.commit()
         return trade_id
+
+    async def get_open_trades(self) -> list:
+        """Get all trades that are still open (not closed yet)."""
+        cursor = await self._db.execute(
+            "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY opened_at ASC"
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = await cursor.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
 
     async def get_recent_trades(self, limit: int = 10) -> list:
         """Get most recent closed trades."""
@@ -105,12 +218,19 @@ class PerformanceDB:
         rows = await cursor.fetchall()
         return [dict(zip(columns, row)) for row in rows]
 
-    async def get_stats(self, days: int = 30) -> dict:
+    async def get_stats_multi_period(self, bankroll: float = 1000.0) -> dict:
+        """Return stats for weekly (7d), monthly (30d), and annual (365d) periods."""
+        result = {}
+        for label, days in [("weekly", 7), ("monthly", 30), ("annual", 365)]:
+            result[label] = await self.get_stats(days=days, bankroll=bankroll)
+        return result
+
+    async def get_stats(self, days: int = 30, bankroll: float = 1000.0) -> dict:
         """Calculate performance statistics for the given period."""
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
         cursor = await self._db.execute(
-            "SELECT pnl_pct, status FROM trades WHERE opened_at >= ? AND closed_at IS NOT NULL",
+            "SELECT pnl_pct, pnl_usd, status FROM trades WHERE opened_at >= ? AND closed_at IS NOT NULL",
             (since,),
         )
         rows = await cursor.fetchall()
@@ -122,32 +242,41 @@ class PerformanceDB:
                 "losses": 0,
                 "win_rate": 0.0,
                 "total_pnl": 0.0,
+                "total_pnl_usd": 0.0,
+                "current_bankroll": bankroll,
                 "max_drawdown": 0.0,
+                "max_drawdown_usd": 0.0,
                 "profit_factor": 0.0,
                 "avg_win": 0.0,
                 "avg_loss": 0.0,
+                "avg_win_usd": 0.0,
+                "avg_loss_usd": 0.0,
             }
 
-        pnl_list = [r[0] for r in rows]
-        wins = sum(1 for p in pnl_list if p > 0)
-        losses = sum(1 for p in pnl_list if p <= 0)
-        total = len(pnl_list)
+        pnl_list     = [r[0] for r in rows]
+        pnl_usd_list = [r[1] for r in rows]
+        wins   = sum(1 for p in pnl_usd_list if p > 0)
+        losses = sum(1 for p in pnl_usd_list if p <= 0)
+        total  = len(pnl_list)
 
-        win_pnls = [p for p in pnl_list if p > 0]
-        loss_pnls = [p for p in pnl_list if p < 0]
+        win_usd  = [p for p in pnl_usd_list if p > 0]
+        loss_usd = [p for p in pnl_usd_list if p < 0]
 
-        gross_profit = sum(win_pnls) if win_pnls else 0.0
-        gross_loss = abs(sum(loss_pnls)) if loss_pnls else 0.0
+        gross_profit = sum(win_usd)  if win_usd  else 0.0
+        gross_loss   = abs(sum(loss_usd)) if loss_usd else 0.0
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
 
-        # Max drawdown
-        running = 0.0
-        peak = 0.0
-        max_dd = 0.0
-        for p in pnl_list:
-            running += p
-            peak = max(peak, running)
-            max_dd = max(max_dd, peak - running)
+        # Max drawdown in USD
+        running_usd = 0.0
+        peak_usd    = 0.0
+        max_dd_usd  = 0.0
+        for p in pnl_usd_list:
+            running_usd += p
+            peak_usd = max(peak_usd, running_usd)
+            max_dd_usd = max(max_dd_usd, peak_usd - running_usd)
+
+        total_pnl_usd    = round(sum(pnl_usd_list), 2)
+        current_bankroll = round(bankroll + total_pnl_usd, 2)
 
         return {
             "total_trades": total,
@@ -155,11 +284,30 @@ class PerformanceDB:
             "losses": losses,
             "win_rate": round((wins / total) * 100, 1) if total > 0 else 0.0,
             "total_pnl": round(sum(pnl_list), 2),
-            "max_drawdown": round(max_dd, 1),
+            "total_pnl_usd": total_pnl_usd,
+            "current_bankroll": current_bankroll,
+            "max_drawdown": round(max_dd_usd / bankroll * 100, 1) if bankroll else 0.0,
+            "max_drawdown_usd": round(max_dd_usd, 2),
             "profit_factor": round(profit_factor, 2),
-            "avg_win": round(sum(win_pnls) / len(win_pnls), 2) if win_pnls else 0.0,
-            "avg_loss": round(sum(loss_pnls) / len(loss_pnls), 2) if loss_pnls else 0.0,
+            "avg_win": round(sum(win_usd) / len(win_usd), 2) if win_usd else 0.0,
+            "avg_loss": round(sum(loss_usd) / len(loss_usd), 2) if loss_usd else 0.0,
+            "avg_win_usd": round(sum(win_usd) / len(win_usd), 2) if win_usd else 0.0,
+            "avg_loss_usd": round(sum(loss_usd) / len(loss_usd), 2) if loss_usd else 0.0,
         }
+
+    async def get_bankroll_history(self, bankroll: float = 1000.0, limit: int = 50) -> list:
+        """Retorna histórico de banca: [(data, bankroll_usd), ...] para equity curve."""
+        cursor = await self._db.execute(
+            "SELECT pnl_usd, closed_at FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at ASC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        history = []
+        running = bankroll
+        for pnl_usd, closed_at in rows:
+            running += (pnl_usd or 0.0)
+            history.append({"date": closed_at, "bankroll": round(running, 2), "pnl_usd": pnl_usd or 0.0})
+        return history
 
     async def close(self):
         """Close the database connection."""
