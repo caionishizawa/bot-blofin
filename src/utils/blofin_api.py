@@ -136,18 +136,51 @@ class BloFinAPI:
         return books[0] if books else {"asks": [], "bids": []}
 
     async def get_mark_price(self, pair: str) -> float:
-        data  = await self._request("GET", "/api/v1/market/mark-price", params={"instId": pair})
-        items = data.get("data", [])
-        return float(items[0].get("markPrice", 0)) if items else 0.0
+        """Retorna preço atual do par. Tenta mark-price, fallback para last ticker."""
+        try:
+            data  = await self._request("GET", "/api/v1/market/mark-price", params={"instId": pair})
+            items = data.get("data", [])
+            if items and float(items[0].get("markPrice", 0)) > 0:
+                return float(items[0]["markPrice"])
+        except Exception:
+            pass
+        # Fallback: last price from ticker
+        try:
+            ticker = await self.get_ticker(pair)
+            last = float(ticker.get("last", 0))
+            if last > 0:
+                return last
+        except Exception:
+            pass
+        return 0.0
 
     async def get_all_mark_prices(self) -> dict:
-        data  = await self._request("GET", "/api/v1/market/mark-price")
-        items = data.get("data", [])
-        return {
-            item["instId"]: float(item.get("markPrice", 0))
-            for item in items
-            if item.get("instId") and item.get("markPrice")
-        }
+        """Retorna dict {pair: price} para todos os pares ativos."""
+        # Tenta endpoint de mark-price em batch
+        try:
+            data  = await self._request("GET", "/api/v1/market/mark-price", params={"instType": "SWAP"})
+            items = data.get("data", [])
+            result = {
+                item["instId"]: float(item.get("markPrice", 0))
+                for item in items
+                if item.get("instId") and float(item.get("markPrice", 0)) > 0
+            }
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"Batch mark-price falhou: {e}")
+        # Fallback: tickers individuais via tickers endpoint
+        try:
+            data  = await self._request("GET", "/api/v1/market/tickers", params={"instType": "SWAP"})
+            items = data.get("data", [])
+            return {
+                item["instId"]: float(item.get("last", 0))
+                for item in items
+                if item.get("instId") and float(item.get("last", 0)) > 0
+            }
+        except Exception as e:
+            logger.warning(f"Batch tickers falhou: {e}")
+        return {}
 
     async def get_multi_tickers(self, pairs: list) -> dict:
         result  = {}

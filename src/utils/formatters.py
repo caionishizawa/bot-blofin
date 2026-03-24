@@ -256,22 +256,26 @@ def format_signal_message(signal: dict, analysis: str = "", ref_link: str = "",
     return _format_vip(signal, analysis, ref_link, mode, recent_wins, recent_losses)
 
 
-def _pos_table(entry: float, sl: float, direction: str) -> str:
-    """Tabela de tamanho de posição para bancas comuns (risco fixo 1%)."""
+def _pos_table(entry: float, sl: float, direction: str, risk_pct: float = 1.5,
+               sizing_info: str = "") -> str:
+    """Tabela de tamanho de posição com risco dinâmico do position sizer."""
     if not entry or not sl or entry == sl:
         return ""
     sl_pct = abs(entry - sl) / entry
     if sl_pct == 0:
         return ""
     bancas = [500, 1_000, 2_000, 5_000, 10_000]
-    lines  = ["*💰 QUANTO ENTRAR — risco 1% da banca:*"]
+    risk_label = f"{risk_pct:.1f}%"
+    lines  = [f"*💰 QUANTO ENTRAR — risco {risk_label} da banca:*"]
     for b in bancas:
-        pos  = round((b * 0.01) / sl_pct)
-        risk = round(b * 0.01)
+        pos  = round((b * risk_pct / 100) / sl_pct)
+        risk = round(b * risk_pct / 100, 1)
         b_str   = f"${b:,.0f}".replace(",", ".")
         pos_str = f"${pos:,.0f}".replace(",", ".")
         lines.append(f"  `{b_str:<8}` → posição `{pos_str}`  _(risco ${risk})_")
     lines.append("_Fechar: 50% no Alvo 1 · 30% no Alvo 2 · 20% no Alvo 3_")
+    if sizing_info:
+        lines.append(f"_🧮 {sizing_info}_")
     return "\n".join(lines)
 
 
@@ -311,7 +315,9 @@ def _format_vip(signal: dict, analysis: str, ref_link: str, mode: str,
     rr_label    = _rr_label(rr)
     now         = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
     footer      = _context_footer(recent_wins, recent_losses)
-    pos_table   = _pos_table(entry, sl, direction)
+    risk_pct    = float(signal.get("risk_pct", 1.5))
+    sizing_info = signal.get("sizing_info", "")
+    pos_table   = _pos_table(entry, sl, direction, risk_pct=risk_pct, sizing_info=sizing_info)
 
     lines = [
         f"{BRAND_HEADER}  ·  *{setup_label}*",

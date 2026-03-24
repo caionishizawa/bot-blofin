@@ -451,6 +451,51 @@ class PerformanceDB:
             "avg_loss_usd": round(sum(loss_usd) / len(loss_usd), 2) if loss_usd else 0.0,
         }
 
+    async def get_sizing_stats(self, bankroll: float = 1000.0) -> dict:
+        """Retorna métricas para o position sizer dinâmico:
+        current_streak, drawdown_pct (últimos 30d), win_rate (últimos 20 trades).
+        """
+        # Últimos 20 trades fechados (para streak e win rate recente)
+        rows = await self._backend.fetchall(
+            "SELECT pnl_usd FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 20",
+            (),
+        )
+        if not rows:
+            return {"current_streak": 0, "drawdown_pct": 0.0, "win_rate_recent": 50.0, "total_closed": 0}
+
+        pnl_list = [r["pnl_usd"] or 0.0 for r in rows]
+
+        # Streak: conta vitórias/derrotas consecutivas a partir do mais recente
+        streak = 0
+        first = pnl_list[0]
+        if first > 0:
+            for p in pnl_list:
+                if p > 0:
+                    streak += 1
+                else:
+                    break
+        elif first < 0:
+            for p in pnl_list:
+                if p < 0:
+                    streak -= 1
+                else:
+                    break
+
+        # Win rate recente (últimos 20)
+        wins = sum(1 for p in pnl_list if p > 0)
+        win_rate = round(wins / len(pnl_list) * 100, 1)
+
+        # Drawdown atual (30 dias)
+        stats_30 = await self.get_stats(days=30, bankroll=bankroll)
+        drawdown_pct = stats_30.get("max_drawdown", 0.0)
+
+        return {
+            "current_streak":   streak,       # positivo = wins seguidos, negativo = losses
+            "drawdown_pct":     drawdown_pct,  # % de drawdown dos últimos 30d
+            "win_rate_recent":  win_rate,      # win rate últimos 20 trades
+            "total_closed":     len(pnl_list),
+        }
+
     async def get_bankroll_history(self, bankroll: float = 1000.0, limit: int = 50) -> list:
         rows = await self._backend.fetchall(
             "SELECT pnl_usd, closed_at FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at ASC LIMIT ?",

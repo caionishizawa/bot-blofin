@@ -23,6 +23,7 @@ from telegram.ext import Application, ChatMemberHandler, CommandHandler, Context
 from modules.chart_generator import create_chart, create_pnl_chart
 from modules.llm_analyst import analyze_signal
 from modules.performance import PerformanceDB
+from modules.position_sizer import calculate_risk_pct
 from modules.scanner import scan_pairs
 from modules.tracker import TradeTracker
 from utils.blofin_api import BloFinAPI
@@ -101,6 +102,11 @@ class BloFinBot:
         self._mentor_sessions: dict[str, bool] = {}
 
         self._app: Application | None = None
+
+        # Payment Manager — inicializado após self.db.initialize()
+        # O bot_app é injetado no run() após self._app ser criado
+        from modules.payment import PaymentManager
+        self.payment_manager = PaymentManager(db=self.db)
 
     # ------------------------------------------------------------------
     # Envio de mensagens
@@ -417,8 +423,73 @@ class BloFinBot:
     # ------------------------------------------------------------------
 
     def _is_vip(self, telegram_id: str) -> bool:
-        """Verifica se o usuário tem acesso VIP."""
+        """Verificação síncrona rápida (apenas memória). Use _is_vip_async para checar o banco."""
         return str(telegram_id) in self._vip_ids or str(telegram_id) in self.admin_ids
+
+    async def _is_vip_async(self, telegram_id: str) -> bool:
+        """
+        Verificação completa de acesso VIP:
+        1. admin ou VIP_IDS env var → acesso imediato
+        2. subscribers table no banco → assinatura ativa e não expirada
+        """
+        if self._is_vip(telegram_id):
+            return True
+        try:
+            return await self.db.is_vip_subscriber(str(telegram_id))
+        except Exception:
+            return False
+
+    async def cmd_minhaconta(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Usuário consulta seu status de assinatura VIP."""
+        user_id = str(update.effective_user.id)
+        is_vip = await self._is_vip_async(user_id)
+
+        if self._is_vip(user_id):
+            # Admin ou VIP_IDS env var
+            msg = (
+                "👑 *Conta: Admin / VIP Manual*\n\n"
+                "Você tem acesso VIP permanente configurado diretamente no servidor.\n"
+                "Todos os recursos estão disponíveis sem prazo de validade."
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            return
+
+        if is_vip:
+            sub = await self.db.get_subscriber(user_id)
+            expires = sub.get("expires_at", "")[:10] if sub else "—"
+            plan = sub.get("plan", "monthly")
+            platform = sub.get("platform", "—")
+            plan_display = "Mensal" if plan == "monthly" else "Anual"
+            platform_display = {
+                "hotmart": "Hotmart", "stripe": "Stripe",
+                "mercadopago": "Mercado Pago", "manual": "Admin",
+            }.get(platform, platform.capitalize())
+
+            msg = (
+                f"⭐ *Conta VIP ativa*\n\n"
+                f"📦 Plano: *{plan_display}*\n"
+                f"💳 Plataforma: {platform_display}\n"
+                f"📅 Validade: `{expires}`\n\n"
+                f"Você tem acesso a todos os recursos VIP:\n"
+                f"• Sinais completos com Entry, SL e TP\n"
+                f"• Análise de IA completa\n"
+                f"• Chat ilimitado com o agente\n\n"
+                f"_Use /ask para perguntar ao agente educacional._"
+            )
+        else:
+            ref = self.ref_link or "https://partner.blofin.com/d/sideradog"
+            msg = (
+                "🆓 *Conta FREE*\n\n"
+                "Você tem acesso ao plano gratuito.\n\n"
+                "Com o VIP você recebe:\n"
+                "• Sinais completos *antes* do trade (Entry + SL + TP1/2/3)\n"
+                "• Análise de IA detalhada em PT-BR\n"
+                "• Chat ilimitado com o agente educacional\n"
+                "• Dashboard pessoal de performance\n\n"
+                f"👉 *Assinar VIP*: {ref}"
+            )
+
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_ask(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Responde dúvida de trading. FREE: 3/dia | VIP: ilimitado."""
@@ -438,7 +509,7 @@ class BloFinBot:
             )
             return
 
-        is_vip = self._is_vip(user_id)
+        is_vip = await self._is_vip_async(user_id)
 
         # Checa limite diário para FREE
         if not is_vip:
@@ -483,7 +554,7 @@ class BloFinBot:
         """Modo mentor VIP — conversa livre com o agente."""
         user_id = str(update.effective_user.id)
 
-        if not self._is_vip(user_id):
+        if not await self._is_vip_async(user_id):
             await update.message.reply_text(
                 "⭐ O modo `/mentor` é exclusivo para assinantes *VIP*.\n\n"
                 f"👉 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}\n\n"
@@ -717,12 +788,21 @@ class BloFinBot:
         filtered = sorted(filtered, key=lambda s: s.get("score", 0), reverse=True)[:max_sigs]
         logger.info(f"{len(filtered)} sinal(is) selecionado(s) [{mode}]")
 
-        risk_pct = float(self.config.get("risk_pct_per_trade", 2.0))
+        # Carrega stats de sizing uma vez por ciclo (mesmas condições para todos os sinais)
+        try:
+            sizing_stats = await self.db.get_sizing_stats(bankroll=self.bankroll)
+        except Exception:
+            sizing_stats = {}
+
         for signal in filtered:
             setup_type = self._classify_setup(signal, mode)
             signal["trade_mode"]  = mode
             signal["setup_type"]  = setup_type
+
+            # Sizing dinâmico: varia 0.5% a 4.0% baseado em qualidade + streak + drawdown
+            risk_pct, sizing_reason = calculate_risk_pct(signal, sizing_stats)
             signal["risk_pct"]    = risk_pct
+            signal["sizing_info"] = sizing_reason
             signal["bankroll"]    = self.bankroll
 
             if mode == "swing":
@@ -1042,6 +1122,7 @@ class BloFinBot:
             logger.warning(f"Erro ao recarregar trades abertos: {e}")
 
         self._app = Application.builder().token(self.token).build()
+        self.payment_manager.set_bot_app(self._app)  # injeta para envio de mensagens
 
         self._app.add_handler(CommandHandler("start", self.cmd_start))
         self._app.add_handler(CommandHandler("scan", self.cmd_scan))
@@ -1064,6 +1145,8 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("reloadkb", self.cmd_reloadkb))
         self._app.add_handler(CommandHandler("addvip", self.cmd_addvip))
         self._app.add_handler(CommandHandler("removevip", self.cmd_removevip))
+        # Fase 10 — Checkout automático
+        self._app.add_handler(CommandHandler("minhaconta", self.cmd_minhaconta))
         self._app.add_handler(ChatMemberHandler(self.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
 
         logger.info("Bot iniciando...")
