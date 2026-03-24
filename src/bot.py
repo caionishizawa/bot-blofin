@@ -34,6 +34,14 @@ from utils.formatters import (
     format_weekly_recap,
     format_weekly_macro,
 )
+from agent.agent import ask_agent, reload_knowledge_base
+from agent.memory import (
+    get_user_memory,
+    get_ask_count_today,
+    increment_ask_count,
+    update_user_memory,
+    FREE_DAILY_LIMIT,
+)
 
 load_dotenv()
 
@@ -86,6 +94,12 @@ class BloFinBot:
         self._swing_days = {1, 3}  # Monday=0 … Sunday=6 → terça=1, quinta=3
         self._last_swing_date: str = ""
 
+        # VIP IDs (podem ser atualizados pelo admin via /addvip)
+        self._vip_ids: set = set(filter(None, os.getenv("VIP_IDS", "").split(",")))
+
+        # Modo mentor (conversa livre VIP) — telegram_id: bool
+        self._mentor_sessions: dict[str, bool] = {}
+
         self._app: Application | None = None
 
     # ------------------------------------------------------------------
@@ -135,8 +149,8 @@ class BloFinBot:
 
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "👋 *BloFin Signal Bot* — Online!\n\n"
-            "Comandos disponíveis:\n"
+            "👋 *SidQuant Bot* — Online!\n\n"
+            "📡 *Sinais:*\n"
             "🔍 /scan — Escanear pares agora\n"
             "📋 /trades — Trades ativos\n"
             "📈 /stats — Performance semanal/mensal/anual\n"
@@ -144,6 +158,9 @@ class BloFinBot:
             "🖼 /share — Card de resultado do último trade\n"
             "⏹ /stop — Pausar scans automáticos\n"
             "▶️ /resume — Retomar scans\n\n"
+            "🤖 *Agente Educacional:*\n"
+            "❓ /ask pergunta — Tirar dúvidas de trading (FREE: 3/dia)\n"
+            "🧑‍🏫 /mentor — Modo conversa livre (VIP)\n\n"
             "📡 *Grupos:*\n"
             "✅ /enable — Ativar sinais neste grupo\n"
             "🚫 /disable — Desativar sinais neste grupo\n"
@@ -151,7 +168,9 @@ class BloFinBot:
             "🛠 *Admin:*\n"
             "📝 /newtrade — Criar trade manual\n"
             "📅 /agenda — Ver agenda de scans\n"
-            "📢 /broadcast — Enviar mensagem para grupos\n",
+            "📢 /broadcast — Enviar mensagem para grupos\n"
+            "👑 /addvip — Liberar acesso VIP a usuário\n"
+            "🔄 /reloadkb — Recarregar base de conhecimento\n",
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -392,6 +411,129 @@ class BloFinBot:
             sent += 1
 
         await update.message.reply_text(f"✅ Mensagem enviada para {sent} grupo(s).")
+
+    # ------------------------------------------------------------------
+    # Agente Educacional — /ask e /mentor
+    # ------------------------------------------------------------------
+
+    def _is_vip(self, telegram_id: str) -> bool:
+        """Verifica se o usuário tem acesso VIP."""
+        return str(telegram_id) in self._vip_ids or str(telegram_id) in self.admin_ids
+
+    async def cmd_ask(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Responde dúvida de trading. FREE: 3/dia | VIP: ilimitado."""
+        user_id = str(update.effective_user.id)
+        question = " ".join(ctx.args) if ctx.args else ""
+
+        if not question:
+            await update.message.reply_text(
+                "🤖 *SidAgent* — Agente educacional do sideradog\n\n"
+                "Use: `/ask sua pergunta aqui`\n\n"
+                "Exemplos:\n"
+                "• `/ask Como valido uma entrada com confluência?`\n"
+                "• `/ask O que é RSI e como uso?`\n"
+                "• `/ask Qual tamanho de posição para iniciante?`\n\n"
+                f"_FREE: {FREE_DAILY_LIMIT} perguntas/dia | VIP: ilimitado_",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        is_vip = self._is_vip(user_id)
+
+        # Checa limite diário para FREE
+        if not is_vip:
+            count_today = await get_ask_count_today(self.db._backend, user_id)
+            if count_today >= FREE_DAILY_LIMIT:
+                await update.message.reply_text(
+                    f"⏳ Você atingiu o limite de *{FREE_DAILY_LIMIT} perguntas/dia* no plano FREE.\n\n"
+                    f"Quer respostas ilimitadas + mais detalhadas?\n"
+                    f"👉 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+
+        # Feedback de carregamento
+        msg = await update.message.reply_text("🤖 Pensando...")
+
+        # Coleta contexto
+        user_memory = await get_user_memory(self.db._backend, user_id)
+        recent_signals = self.tracker.get_all()
+
+        # Chama o agente
+        response = await ask_agent(
+            question=question,
+            user_memory=user_memory,
+            recent_signals=recent_signals,
+            is_vip=is_vip,
+        )
+
+        # Atualiza memória e contador
+        await increment_ask_count(self.db._backend, user_id)
+        await update_user_memory(self.db._backend, user_id, question)
+
+        # Envia resposta
+        tier_badge = "⭐ VIP" if is_vip else "🆓 FREE"
+        header = f"🤖 *SidAgent* [{tier_badge}]\n\n"
+        await msg.edit_text(
+            header + response,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def cmd_mentor(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Modo mentor VIP — conversa livre com o agente."""
+        user_id = str(update.effective_user.id)
+
+        if not self._is_vip(user_id):
+            await update.message.reply_text(
+                "⭐ O modo `/mentor` é exclusivo para assinantes *VIP*.\n\n"
+                f"👉 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}\n\n"
+                "No plano FREE, use `/ask sua pergunta` para até 3 perguntas/dia.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        await update.message.reply_text(
+            "🧑‍🏫 *Modo Mentor Ativo* ⭐\n\n"
+            "Me faz qualquer pergunta sobre trading, setups, gestão de risco, "
+            "psicologia ou os sinais do bot.\n\n"
+            "Use `/ask sua pergunta` para conversar.\n\n"
+            "_VIP: sem limite de perguntas, respostas mais detalhadas (Claude Sonnet)._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def cmd_reloadkb(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: recarrega a knowledge base do agente sem reiniciar o bot."""
+        if not self._is_admin(update):
+            await update.message.reply_text("⛔ Acesso restrito.")
+            return
+        reload_knowledge_base()
+        await update.message.reply_text("✅ Knowledge base recarregada com sucesso.")
+
+    async def cmd_addvip(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: adiciona usuário à lista VIP em memória. Uso: /addvip <telegram_id>"""
+        if not self._is_admin(update):
+            await update.message.reply_text("⛔ Acesso restrito.")
+            return
+        if not ctx.args:
+            await update.message.reply_text("Uso: `/addvip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        vip_id = ctx.args[0].strip()
+        self._vip_ids.add(vip_id)
+        await update.message.reply_text(f"✅ Usuário `{vip_id}` adicionado ao VIP.", parse_mode=ParseMode.MARKDOWN)
+        logger.info(f"VIP adicionado: {vip_id}")
+
+    async def cmd_removevip(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: remove usuário do VIP. Uso: /removevip <telegram_id>"""
+        if not self._is_admin(update):
+            await update.message.reply_text("⛔ Acesso restrito.")
+            return
+        if not ctx.args:
+            await update.message.reply_text("Uso: `/removevip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
+            return
+        vip_id = ctx.args[0].strip()
+        self._vip_ids.discard(vip_id)
+        await update.message.reply_text(f"✅ Usuário `{vip_id}` removido do VIP.", parse_mode=ParseMode.MARKDOWN)
+        logger.info(f"VIP removido: {vip_id}")
 
     async def on_bot_added(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Auto-register group when bot is added as member."""
@@ -677,7 +819,7 @@ class BloFinBot:
                             f"Direção: `{direction}`\n"
                             f"PNL: `{'+'if pnl_usd>=0 else ''}{pnl_usd:.2f} USD`\n\n"
                             f"Quer pegar o próximo *antes de acontecer*?\n"
-                            f"👇 Acesse o VIP: {self.config.get('ref_link', os.getenv('TELEGRAM_REF_LINK', ''))}\n\n"
+                            f"👇 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}\n\n"
                             f"⚠️ Não é recomendação de investimento."
                         )
                         try:
@@ -916,6 +1058,12 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
         self._app.add_handler(CommandHandler("macro", self.cmd_macro))
         self._app.add_handler(CommandHandler("share", self.cmd_share))
+        # Fase 9 — Agente Educacional
+        self._app.add_handler(CommandHandler("ask", self.cmd_ask))
+        self._app.add_handler(CommandHandler("mentor", self.cmd_mentor))
+        self._app.add_handler(CommandHandler("reloadkb", self.cmd_reloadkb))
+        self._app.add_handler(CommandHandler("addvip", self.cmd_addvip))
+        self._app.add_handler(CommandHandler("removevip", self.cmd_removevip))
         self._app.add_handler(ChatMemberHandler(self.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
 
         logger.info("Bot iniciando...")

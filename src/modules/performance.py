@@ -67,6 +67,32 @@ class _PGBackend:
                     added_at  TEXT NOT NULL
                 )
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    telegram_id      TEXT PRIMARY KEY,
+                    level            TEXT DEFAULT 'iniciante',
+                    ask_count_today  INTEGER DEFAULT 0,
+                    ask_date         TEXT DEFAULT '',
+                    total_asks       INTEGER DEFAULT 0,
+                    summary          TEXT DEFAULT '',
+                    last_topics      TEXT DEFAULT '[]',
+                    updated_at       TEXT NOT NULL
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscribers (
+                    id          TEXT PRIMARY KEY,
+                    email       TEXT NOT NULL,
+                    name        TEXT DEFAULT '',
+                    telegram_id TEXT,
+                    plan        TEXT NOT NULL,
+                    status      TEXT DEFAULT 'active',
+                    platform    TEXT NOT NULL,
+                    payment_id  TEXT DEFAULT '',
+                    expires_at  TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )
+            """)
 
     async def execute(self, query: str, *args):
         async with self._pool.acquire() as conn:
@@ -151,6 +177,32 @@ class _SQLiteBackend:
                 title     TEXT,
                 enabled   INTEGER DEFAULT 1,
                 added_at  TEXT NOT NULL
+            )
+        """)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                telegram_id      TEXT PRIMARY KEY,
+                level            TEXT DEFAULT 'iniciante',
+                ask_count_today  INTEGER DEFAULT 0,
+                ask_date         TEXT DEFAULT '',
+                total_asks       INTEGER DEFAULT 0,
+                summary          TEXT DEFAULT '',
+                last_topics      TEXT DEFAULT '[]',
+                updated_at       TEXT NOT NULL
+            )
+        """)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                id          TEXT PRIMARY KEY,
+                email       TEXT NOT NULL,
+                name        TEXT DEFAULT '',
+                telegram_id TEXT,
+                plan        TEXT NOT NULL,
+                status      TEXT DEFAULT 'active',
+                platform    TEXT NOT NULL,
+                payment_id  TEXT DEFAULT '',
+                expires_at  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
             )
         """)
         for col, definition in [
@@ -413,3 +465,121 @@ class PerformanceDB:
 
     async def close(self):
         await self._backend.close()
+
+    # ------------------------------------------------------------------
+    # Subscribers (VIP checkout)
+    # ------------------------------------------------------------------
+
+    async def add_subscriber(
+        self,
+        email: str,
+        name: str = "",
+        telegram_id: str = None,
+        plan: str = "monthly",
+        expires_at: str = "",
+        platform: str = "manual",
+        payment_id: str = "",
+    ) -> str:
+        """
+        Adiciona ou renova assinante VIP.
+        Se já existir registro com mesmo email/payment_id, atualiza o status e expiry.
+        Retorna o ID gerado.
+        """
+        import uuid
+        sub_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Tenta atualizar registro existente pelo email
+        existing = await self._backend.fetchall(
+            "SELECT id FROM subscribers WHERE email=? ORDER BY created_at DESC LIMIT 1",
+            (email,),
+        )
+        if existing:
+            sub_id = existing[0]["id"]
+            await self._backend.execute(
+                """UPDATE subscribers
+                   SET telegram_id=?, plan=?, status='active', platform=?,
+                       payment_id=?, expires_at=?
+                   WHERE id=?""",
+                (telegram_id, plan, platform, payment_id, expires_at, sub_id),
+            )
+        else:
+            await self._backend.execute(
+                """INSERT INTO subscribers
+                       (id, email, name, telegram_id, plan, status, platform, payment_id, expires_at, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+                (sub_id, email, name, telegram_id, plan, platform, payment_id, expires_at, now),
+            )
+        return sub_id
+
+    async def is_vip_subscriber(self, telegram_id: str) -> bool:
+        """Retorna True se o telegram_id tem assinatura ativa e não expirada."""
+        if not telegram_id:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        rows = await self._backend.fetchall(
+            """SELECT id FROM subscribers
+               WHERE telegram_id=? AND status='active' AND expires_at > ?
+               LIMIT 1""",
+            (str(telegram_id), now),
+        )
+        return len(rows) > 0
+
+    async def get_subscriber(self, telegram_id: str) -> dict:
+        """Retorna dados da assinatura ativa do telegram_id, ou {} se não encontrado."""
+        if not telegram_id:
+            return {}
+        now = datetime.now(timezone.utc).isoformat()
+        rows = await self._backend.fetchall(
+            """SELECT * FROM subscribers
+               WHERE telegram_id=? AND status='active'
+               ORDER BY expires_at DESC LIMIT 1""",
+            (str(telegram_id),),
+        )
+        return rows[0] if rows else {}
+
+    async def list_subscribers(self, active_only: bool = True) -> list:
+        """Lista todos os assinantes (por padrão apenas ativos e não expirados)."""
+        now = datetime.now(timezone.utc).isoformat()
+        if active_only:
+            rows = await self._backend.fetchall(
+                "SELECT * FROM subscribers WHERE status='active' AND expires_at > ? ORDER BY created_at DESC",
+                (now,),
+            )
+        else:
+            rows = await self._backend.fetchall(
+                "SELECT * FROM subscribers ORDER BY created_at DESC",
+                (),
+            )
+        return rows
+
+    async def revoke_subscriber(self, email: str = "", payment_id: str = "") -> None:
+        """Revoga acesso VIP por email ou payment_id (reembolso/chargeback)."""
+        if payment_id:
+            await self._backend.execute(
+                "UPDATE subscribers SET status='refunded' WHERE payment_id=?",
+                (payment_id,),
+            )
+        elif email:
+            await self._backend.execute(
+                "UPDATE subscribers SET status='refunded' WHERE email=?",
+                (email,),
+            )
+
+    async def expire_stale_subscribers(self) -> int:
+        """
+        Marca como expiradas as assinaturas vencidas.
+        Chamar periodicamente (ex: a cada 6h pelo scheduler do bot).
+        Retorna quantidade de registros atualizados.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        rows_before = await self._backend.fetchall(
+            "SELECT COUNT(*) as n FROM subscribers WHERE status='active' AND expires_at <= ?",
+            (now,),
+        )
+        count = rows_before[0]["n"] if rows_before else 0
+        await self._backend.execute(
+            "UPDATE subscribers SET status='expired' WHERE status='active' AND expires_at <= ?",
+            (now,),
+        )
+        return count
