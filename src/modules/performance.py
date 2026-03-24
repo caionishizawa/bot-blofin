@@ -26,7 +26,11 @@ class _PGBackend:
 
     async def initialize(self):
         import asyncpg
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
+        # Garante SSL para Render external URL
+        dsn = self._dsn
+        if "render.com" in dsn and "sslmode" not in dsn:
+            dsn = dsn + "?sslmode=require"
+        self._pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
         async with self._pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS trades (
@@ -187,6 +191,7 @@ class PerformanceDB:
     """Trade history and performance metrics. Auto-selects PostgreSQL or SQLite."""
 
     def __init__(self, db_path: str = "data/trades.db"):
+        self._db_path = db_path
         dsn = os.getenv("DATABASE_URL", "")
         if dsn.startswith("postgres"):
             self._backend = _PGBackend(dsn)
@@ -194,7 +199,15 @@ class PerformanceDB:
             self._backend = _SQLiteBackend(db_path)
 
     async def initialize(self):
-        await self._backend.initialize()
+        import logging
+        try:
+            await self._backend.initialize()
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "PostgreSQL falhou (%s) — usando SQLite como fallback", e
+            )
+            self._backend = _SQLiteBackend(self._db_path)
+            await self._backend.initialize()
 
     # ------------------------------------------------------------------
     # Groups
