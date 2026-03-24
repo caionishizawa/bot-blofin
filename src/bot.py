@@ -10,6 +10,7 @@ import logging
 import os
 import random
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Optional
 
 import yaml
 from aiohttp import web as aiohttp_web
@@ -30,6 +31,8 @@ from utils.formatters import (
     format_stats_message,
     format_trades_list,
     format_update_message,
+    format_weekly_recap,
+    format_weekly_macro,
 )
 
 load_dotenv()
@@ -67,6 +70,10 @@ class BloFinBot:
 
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "")
+        self.free_channel_id  = os.getenv("TELEGRAM_FREE_CHANNEL_ID", self.channel_id)
+        self.vip_channel_id   = os.getenv("TELEGRAM_VIP_CHANNEL_ID",  self.channel_id)
+        self.admin_id         = os.getenv("TELEGRAM_ADMIN_ID", "")
+        self._last_signal_at: Optional[datetime] = None
         self.ref_link = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
         self.bankroll = float(self.config.get("starting_bankroll", 1000.0))
         self.admin_ids = set(filter(None, os.getenv("ADMIN_IDS", "").split(",")))
@@ -258,7 +265,9 @@ class BloFinBot:
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     def _is_admin(self, update) -> bool:
-        return not self.admin_ids or str(update.effective_user.id) in self.admin_ids
+        if not self.admin_ids:
+            return False  # bloqueia tudo se ADMIN_IDS não estiver configurado
+        return str(update.effective_user.id) in self.admin_ids
 
     async def cmd_newtrade(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Cria um trade manual. Uso: /newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3"""
@@ -348,10 +357,19 @@ class BloFinBot:
         lines = ["📅 *Agenda de Scans — Hoje*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
         for t in schedule:
             status = "✅" if t <= now else "⏳"
-            lines.append(f"{status} `{t.strftime('%H:%M')}`")
+            lines.append(f"{status} `{t.strftime('%H:%M')}`  _BRT_")
         lines.append("")
         lines.append(f"_Bot está {'▶️ rodando' if self.running else '⏹ pausado'}_")
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    async def cmd_macro(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Dispara manualmente a análise macro semanal."""
+        if not self._is_admin(update):
+            await update.message.reply_text("⛔ Acesso restrito.")
+            return
+        msg = await update.message.reply_text("📊 Gerando análise macro semanal...")
+        await self._send_weekly_macro()
+        await msg.edit_text("✅ Análise macro enviada.")
 
     async def cmd_broadcast(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Envia mensagem personalizada para todos os grupos. Uso: /broadcast TEXTO"""
@@ -405,34 +423,146 @@ class BloFinBot:
     # Lógica principal
     # ------------------------------------------------------------------
 
-    def _is_swing_day(self) -> bool:
-        """True on Tue/Thu, once per day."""
-        now = datetime.now(timezone.utc)
-        today = now.strftime("%Y-%m-%d")
-        if now.weekday() in self._swing_days and today != self._last_swing_date:
-            return True
-        return False
+    async def _send_weekly_macro(self):
+        """Segunda-feira: coleta dados de mercado, gera análise macro e entradas de convicção."""
+        from modules.llm_analyst import analyze_weekly_macro
 
-    async def _scan_cycle(self, chat_id: str = None) -> int:
-        """Escaneia todos os pares e envia sinais ao canal. Retorna nº de sinais."""
-        pairs = self.config.get("pairs", DEFAULT_PAIRS)
+        logger.info("Gerando análise macro semanal...")
+        try:
+            # ── Coleta dados de mercado (4H para contexto) ──────────────────
+            macro_pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+            market_raw  = {}
+            for pair in macro_pairs:
+                try:
+                    candles = await self.api.get_candles(pair, bar="4H", limit=50)
+                    if candles:
+                        from utils.indicators import candles_to_df, add_all_indicators
+                        df = add_all_indicators(candles_to_df(candles))
+                        last  = df.iloc[-1]
+                        first = df.iloc[0]
+                        market_raw[pair] = {
+                            "price": last["close"],
+                            "rsi":   float(last.get("rsi", 50)),
+                            "change_pct": round((last["close"] - first["close"]) / first["close"] * 100, 1),
+                            "trend": "alta" if last["close"] > df["close"].rolling(20).mean().iloc[-1] else "baixa",
+                        }
+                except Exception as e:
+                    logger.warning(f"Macro data failed for {pair}: {e}")
+
+            btc = market_raw.get("BTC-USDT", {})
+            eth = market_raw.get("ETH-USDT", {})
+            sol = market_raw.get("SOL-USDT", {})
+
+            # ── Scan de convicção no 4H e 1D ────────────────────────────────
+            conviction_signals = await scan_pairs(DEFAULT_PAIRS[:12], bar="4H")
+            conviction_signals = sorted(
+                [s for s in conviction_signals if s.get("rr_ratio", 0) >= 2.5 and s.get("confidence", 0) >= 75],
+                key=lambda s: s.get("score", 0), reverse=True
+            )[:3]
+
+            # ── Calcula viés macro ───────────────────────────────────────────
+            all_pairs_signals = await scan_pairs(DEFAULT_PAIRS, bar="1H")
+            bullish_count = sum(1 for s in all_pairs_signals if s.get("direction") == "LONG")
+            bearish_count = sum(1 for s in all_pairs_signals if s.get("direction") == "SHORT")
+            total_scanned = len(DEFAULT_PAIRS)
+
+            if bullish_count > bearish_count * 1.4:
+                bias = "bullish"
+            elif bearish_count > bullish_count * 1.4:
+                bias = "bearish"
+            else:
+                bias = "neutro"
+
+            btc_rsi = btc.get("rsi", 50)
+            if btc_rsi > 70:
+                bias = "bearish"
+            elif btc_rsi < 35:
+                bias = "bullish"
+
+            week_str = datetime.now().strftime("%d/%m")
+            market_data = {
+                "week":            week_str,
+                "btc_price":       f"${btc.get('price', 0):,.0f}",
+                "btc_rsi":         btc.get("rsi", 50),
+                "btc_trend":       btc.get("trend", "lateral"),
+                "btc_change":      btc.get("change_pct", 0.0),
+                "eth_price":       f"${eth.get('price', 0):,.0f}",
+                "eth_rsi":         eth.get("rsi", 50),
+                "eth_trend":       eth.get("trend", "lateral"),
+                "eth_change":      eth.get("change_pct", 0.0),
+                "sol_price":       f"${sol.get('price', 0):,.0f}",
+                "sol_rsi":         sol.get("rsi", 50),
+                "sol_trend":       sol.get("trend", "lateral"),
+                "btc_dominance":   "estimado ~55%" if btc.get("change_pct", 0) > eth.get("change_pct", 0) else "reduzindo",
+                "bullish_count":   bullish_count,
+                "bearish_count":   bearish_count,
+                "total_pairs":     total_scanned,
+                "conviction_count": len(conviction_signals),
+                "bias":            bias,
+            }
+
+            # ── Gera análise com LLM ─────────────────────────────────────────
+            macro_text = await analyze_weekly_macro(market_data)
+
+            # ── Formata e envia ──────────────────────────────────────────────
+            msg = format_weekly_macro(
+                macro_text,
+                market_data,
+                conviction_signals,
+                ref_link=self.ref_link,
+            )
+
+            targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
+            if self.channel_id and self.channel_id not in targets:
+                targets.append(self.channel_id)
+            for target in targets:
+                await self._send(msg, chat_id=target)
+
+            logger.info(f"Análise macro enviada — viés {bias}, {len(conviction_signals)} convicção(ões)")
+
+        except Exception as e:
+            logger.error(f"Erro ao gerar análise macro semanal: {e}")
+
+    @staticmethod
+    def _classify_setup(signal: dict, mode: str) -> str:
+        """Classifica o setup como: scalp, swing, sniper, breakout, reversal, retest."""
+        rr  = signal.get("rr_ratio", 0)
+        reasons = " ".join(signal.get("reasons", [])).lower()
+        if rr >= 4.5:
+            return "sniper"
+        if mode == "swing":
+            return "swing"
+        if any(k in reasons for k in ("divergên", "divergencia", "reversal", "reversão")):
+            return "reversal"
+        if any(k in reasons for k in ("breakout", "rompimento", "break")):
+            return "breakout"
+        if any(k in reasons for k in ("retest", "reteste", "retorno")):
+            return "retest"
+        if rr >= 3.0:
+            return "premium"
+        return "scalp"
+
+    async def _scan_cycle(self, mission: dict = None, chat_id: str = None) -> int:
+        """Escaneia pares e envia sinais. mission = {bar, mode, max_signals}."""
+        pairs          = self.config.get("pairs", DEFAULT_PAIRS)
         min_confidence = self.config.get("min_confidence", 50)
 
-        # Swing day: scan 4H, lower RR threshold, lower leverage
-        swing_day = self._is_swing_day()
-        if swing_day:
-            bar = "4H"
-            min_rr, max_rr = 1.5, 3.0
-            mode = "swing"
+        if mission:
+            bar        = mission.get("bar", "1H")
+            mode       = mission.get("mode", "scalp")
+            max_sigs   = mission.get("max_signals", 2)
         else:
-            bar = self.config.get("timeframe", "1H")
-            min_rr = self.config.get("min_rr", 1.5)
-            max_rr = self.config.get("max_rr", 4.0)
-            mode = "scalp"
+            bar      = self.config.get("timeframe", "1H")
+            mode     = "scalp"
+            max_sigs = 2
 
-        logger.info(f"Escaneando {len(pairs)} pares em {bar} [{mode}]...")
+        min_rr = self.config.get("min_rr", 1.5)
+        max_rr = self.config.get("max_rr", 5.0)
+        if mode == "swing":
+            min_rr, max_rr = 2.0, 5.0
+
+        logger.info(f"Scan [{mode.upper()} {bar}] — {len(pairs)} pares, max {max_sigs} sinal(is)...")
         signals = await scan_pairs(pairs, bar=bar)
-        logger.info(f"{len(signals)} sinal(is) bruto(s) encontrado(s)")
 
         filtered = [
             s for s in signals
@@ -440,42 +570,43 @@ class BloFinBot:
             and s.get("rr_ratio", 0) <= max_rr
             and s.get("confidence", 0) >= min_confidence
         ]
-        logger.info(f"{len(filtered)} sinal(is) após filtro [{mode}]")
 
-        # On swing day, take only the best signal (highest score)
-        if swing_day and filtered:
-            filtered = sorted(filtered, key=lambda s: s.get("score", 0), reverse=True)[:1]
-            self._last_swing_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Ordena por score e limita ao máximo da janela
+        filtered = sorted(filtered, key=lambda s: s.get("score", 0), reverse=True)[:max_sigs]
+        logger.info(f"{len(filtered)} sinal(is) selecionado(s) [{mode}]")
 
         risk_pct = float(self.config.get("risk_pct_per_trade", 2.0))
         for signal in filtered:
-            signal["trade_mode"] = mode
-            signal["risk_pct"]   = risk_pct
-            signal["bankroll"]   = self.bankroll
+            setup_type = self._classify_setup(signal, mode)
+            signal["trade_mode"]  = mode
+            signal["setup_type"]  = setup_type
+            signal["risk_pct"]    = risk_pct
+            signal["bankroll"]    = self.bankroll
 
-            # Swing: override leverage to 3-5x
             if mode == "swing":
                 signal["swing_override_lev"] = 4
 
             trade = self.tracker.add_trade(signal)
             await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
-            analysis = await analyze_signal(signal, mode=mode)
+            analysis  = await analyze_signal(signal, mode=mode)
             chart_buf = create_chart(signal, self.config)
-            msg = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link, mode=mode)
+            msg       = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link, mode=mode)
 
             logger.info(
-                f"[{mode.upper()}] {signal['pair']} {signal['direction']} "
-                f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')}"
+                f"[{setup_type.upper()}] {signal['pair']} {signal['direction']} "
+                f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')} bar={bar}"
             )
 
             targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
             if chat_id and chat_id not in targets:
                 targets.append(chat_id)
-            if not targets and self.channel_id:
-                targets = [self.channel_id]
+            if not targets and self.vip_channel_id:
+                targets = [self.vip_channel_id]
 
             for target in targets:
                 await self._send(msg, photo=chart_buf, chat_id=target)
+
+            self._last_signal_at = datetime.now(timezone.utc)
 
         return len(filtered)
 
@@ -536,6 +667,23 @@ class BloFinBot:
 
                 if event in ("SL_HIT", "TP3_HIT"):
                     self.tracker.remove_trade(pair)
+                    # Post teaser to FREE channel after trade closes
+                    if self.free_channel_id and self.free_channel_id != self.vip_channel_id:
+                        result_emoji = "✅" if trade_dict.get("pnl_usd", 0) > 0 else "❌"
+                        pnl_usd = trade_dict.get("pnl_usd", 0)
+                        direction = trade_dict.get("direction", "LONG")
+                        teaser = (
+                            f"{result_emoji} *Resultado do sinal VIP — {pair}*\n\n"
+                            f"Direção: `{direction}`\n"
+                            f"PNL: `{'+'if pnl_usd>=0 else ''}{pnl_usd:.2f} USD`\n\n"
+                            f"Quer pegar o próximo *antes de acontecer*?\n"
+                            f"👇 Acesse o VIP: {self.config.get('ref_link', os.getenv('TELEGRAM_REF_LINK', ''))}\n\n"
+                            f"⚠️ Não é recomendação de investimento."
+                        )
+                        try:
+                            await self._send(teaser, chat_id=self.free_channel_id)
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.error(f"Erro verificando {pair}: {e}")
@@ -565,46 +713,88 @@ class BloFinBot:
             )
 
     def _schedule_daily_scans(self) -> list:
-        """Gera horários aleatórios de scan para o dia atual.
+        """Gera missões de scan variando por dia da semana.
 
-        Janelas:
-          • Manhã  08:00–12:00 → 3-5 scans (pesado)
-          • Tarde  12:00–17:00 → 0-2 scans (leve)
-          • Noite  17:00–22:00 → 3-5 scans (pesado)
+        Retorna lista de dicts: {time, bar, mode, max_signals}
+
+        Segunda/Qua/Sex (dias ativos): 8-10 janelas, mix scalp+sniper
+        Terça/Quinta (swing days): 6-8 janelas, inclui 4H swing
+        Sábado/Domingo: 4-6 janelas, mais leve
         """
-        today = date.today()
-        scan_times = []
+        today   = date.today()
+        weekday = today.weekday()  # 0=Seg … 6=Dom
 
-        windows = [
-            (time(8, 0),  time(12, 0), 3, 5),   # manhã  — pesado
-            (time(12, 0), time(17, 0), 0, 2),   # tarde  — leve
-            (time(17, 0), time(22, 0), 3, 5),   # noite  — pesado
-        ]
+        # (anchor_time, spread_min, bar, mode, max_signals)
+        if weekday in (5, 6):  # FDS — seletivo
+            templates = [
+                (time(9,  0), 20, "1H",  "scalp", 1),
+                (time(12, 0), 30, "4H",  "swing", 1),
+                (time(16, 0), 20, "1H",  "scalp", 1),
+                (time(20, 30), 25, "4H", "swing", 1),
+            ]
+            bonus_chance = 0.25
+        elif weekday in (1, 3):  # Ter/Qui — swing + scalp
+            templates = [
+                (time(8,  45), 15, "1H",  "scalp", 1),
+                (time(10, 30), 20, "15m", "scalp", 1),
+                (time(13,  0), 20, "4H",  "swing", 1),
+                (time(15, 30), 15, "1H",  "scalp", 2),
+                (time(18,  0), 20, "4H",  "swing", 1),
+                (time(20, 30), 25, "1H",  "scalp", 1),
+            ]
+            bonus_chance = 0.40
+        else:  # Seg/Qua/Sex — dias ativos, foco scalp
+            templates = [
+                (time(8,  30), 15, "15m", "scalp", 1),
+                (time(9,  15), 20, "1H",  "scalp", 2),
+                (time(11,  0), 15, "15m", "scalp", 1),
+                (time(13, 30), 20, "1H",  "scalp", 1),
+                (time(15, 30), 15, "1H",  "scalp", 2),
+                (time(17, 15), 20, "15m", "scalp", 1),
+                (time(19,  0), 20, "1H",  "scalp", 1),
+                (time(21,  0), 25, "4H",  "swing", 1),
+            ]
+            bonus_chance = 0.50
 
-        for start_t, end_t, min_n, max_n in windows:
-            count = random.randint(min_n, max_n)
-            start_dt = datetime.combine(today, start_t)
-            end_dt   = datetime.combine(today, end_t)
-            window_minutes = int((end_dt - start_dt).total_seconds() // 60)
-            chosen_minutes = sorted(random.sample(range(window_minutes), min(count, window_minutes)))
-            for m in chosen_minutes:
-                scan_times.append(start_dt + timedelta(minutes=m))
+        missions = []
+        for anchor_t, spread, bar, mode, max_sigs in templates:
+            base   = datetime.combine(today, anchor_t)
+            offset = random.randint(-spread, spread)
+            missions.append({
+                "time":        base + timedelta(minutes=offset),
+                "bar":         bar,
+                "mode":        mode,
+                "max_signals": max_sigs,
+            })
 
-        scan_times.sort()
+        # Scan bônus surpresa
+        if random.random() < bonus_chance:
+            bonus_h = random.randint(10, 20)
+            bonus_m = random.randint(0, 59)
+            missions.append({
+                "time":        datetime.combine(today, time(bonus_h, bonus_m)),
+                "bar":         random.choice(["1H", "4H"]),
+                "mode":        random.choice(["scalp", "swing"]),
+                "max_signals": 1,
+            })
+
+        missions.sort(key=lambda m: m["time"])
+        self._today_schedule = [m["time"] for m in missions]
+
         logger.info(
-            f"Agenda do dia: {len(scan_times)} scans em "
-            + ", ".join(t.strftime("%H:%M") for t in scan_times)
+            f"Agenda [{['Seg','Ter','Qua','Qui','Sex','Sab','Dom'][weekday]}] "
+            f"{len(missions)} missões: "
+            + ", ".join(f"{m['time'].strftime('%H:%M')}[{m['bar']}]" for m in missions)
         )
-        self._today_schedule = scan_times[:]
-        return scan_times
+        return missions
 
     async def _background_loop(self):
         """Loop de background: scan automático por agenda + atualização de trades."""
         update_interval = self.config.get("update_interval", 60)
         logger.info(f"Background loop iniciado (update trades: {update_interval}s)")
 
-        # Gera agenda para hoje
-        scheduled = self._schedule_daily_scans()
+        # Gera agenda para hoje (lista de missões)
+        missions   = self._schedule_daily_scans()
         current_day = date.today()
 
         while True:
@@ -614,23 +804,66 @@ class BloFinBot:
                 # Virada do dia — gera nova agenda
                 if now.date() != current_day:
                     current_day = now.date()
-                    scheduled = self._schedule_daily_scans()
+                    missions = self._schedule_daily_scans()
+
+                    # Domingo 20h → resumo semanal automático
+                    if now.weekday() == 6 and now.hour == 20:
+                        try:
+                            stats = await self.db.get_stats(days=7, bankroll=self.bankroll)
+                            recap = format_weekly_recap(stats, starting_bankroll=self.bankroll)
+                            targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
+                            if self.channel_id and self.channel_id not in targets:
+                                targets.append(self.channel_id)
+                            for target in targets:
+                                await self._send(recap, chat_id=target)
+                            logger.info("Resumo semanal enviado.")
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar resumo semanal: {e}")
+
+                    # Segunda-feira 8h → análise macro + entradas de convicção
+                    if now.weekday() == 0 and now.hour == 8:
+                        await self._send_weekly_macro()
 
                 if self.running:
                     # Atualiza trades ativos a cada tick
                     await self._update_trades()
 
-                    # Dispara scans cujo horário já passou e ainda não foram executados
-                    due = [t for t in scheduled if t <= now]
+                    # Dispara missões cujo horário já passou
+                    due      = [m for m in missions if m["time"] <= now]
+                    missions = [m for m in missions if m["time"] > now]
                     if due:
-                        scheduled = [t for t in scheduled if t > now]
-                        logger.info(f"Executando {len(due)} scan(s) agendado(s) — próximos: {[t.strftime('%H:%M') for t in scheduled]}")
-                        await self._scan_cycle()
+                        remaining_times = [m["time"].strftime("%H:%M") for m in missions]
+                        logger.info(f"Executando {len(due)} missão(ões) — próximas: {remaining_times}")
+                        for mission in due:
+                            await self._scan_cycle(mission=mission)
 
             except Exception as e:
                 logger.error(f"Erro no ciclo: {e}")
 
             await asyncio.sleep(update_interval)
+
+    # ------------------------------------------------------------------
+    # Health check
+    # ------------------------------------------------------------------
+
+    async def _health_check_loop(self):
+        """Alert admin if no signal has been sent in 25+ hours."""
+        await asyncio.sleep(3600)  # first check after 1h
+        while self.running:
+            try:
+                if self._last_signal_at:
+                    hours_since = (datetime.now(timezone.utc) - self._last_signal_at).total_seconds() / 3600
+                    if hours_since > 25 and self.admin_id:
+                        bot = self._app.bot if hasattr(self, "_app") else None
+                        if bot:
+                            await bot.send_message(
+                                chat_id=self.admin_id,
+                                text=f"⚠️ *BloFin Bot — Alerta*\n\nNenhum sinal enviado há {hours_since:.0f}h.\nVerifique se o bot está rodando corretamente.",
+                                parse_mode="Markdown",
+                            )
+            except Exception as e:
+                logger.error("Health check error: %s", e)
+            await asyncio.sleep(3600)  # check every hour
 
     # ------------------------------------------------------------------
     # Inicialização
@@ -681,6 +914,7 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("newtrade", self.cmd_newtrade))
         self._app.add_handler(CommandHandler("agenda", self.cmd_agenda))
         self._app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
+        self._app.add_handler(CommandHandler("macro", self.cmd_macro))
         self._app.add_handler(CommandHandler("share", self.cmd_share))
         self._app.add_handler(ChatMemberHandler(self.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
 
@@ -701,6 +935,7 @@ class BloFinBot:
             logger.info(f"Dashboard rodando em http://localhost:{dashboard_port}")
 
             bg_task = asyncio.create_task(self._background_loop())
+            hc_task = asyncio.create_task(self._health_check_loop())
             logger.info("Bot rodando. Pressione Ctrl+C para parar.")
 
             try:
@@ -710,8 +945,13 @@ class BloFinBot:
                 pass
             finally:
                 bg_task.cancel()
+                hc_task.cancel()
                 try:
                     await bg_task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await hc_task
                 except asyncio.CancelledError:
                     pass
                 await dash_runner.cleanup()

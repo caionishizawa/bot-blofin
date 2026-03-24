@@ -107,6 +107,8 @@ class ActiveTrade:
                 self._close(self.stop_loss)
                 return "SL_HIT"
             if not self.tp3_hit and price >= self.tp3:
+                self.tp1_hit = True  # garante parciais marcadas mesmo em gap
+                self.tp2_hit = True
                 self.tp3_hit = True
                 self.status = TradeStatus.TP3_HIT
                 self._close(self.tp3)
@@ -114,12 +116,12 @@ class ActiveTrade:
             if not self.tp2_hit and price >= self.tp2:
                 self.tp2_hit = True
                 self.status = TradeStatus.TP2_HIT
-                self._close(self.tp2)
+                # Partial close — trade stays open (remaining 20%)
                 return "TP2_HIT"
             if not self.tp1_hit and price >= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
-                self._close(self.tp1)
+                # Partial close — trade stays open (remaining 50%)
                 return "TP1_HIT"
         else:  # SHORT
             if not self.sl_hit and price >= self.stop_loss:
@@ -128,6 +130,8 @@ class ActiveTrade:
                 self._close(self.stop_loss)
                 return "SL_HIT"
             if not self.tp3_hit and price <= self.tp3:
+                self.tp1_hit = True  # garante parciais marcadas mesmo em gap
+                self.tp2_hit = True
                 self.tp3_hit = True
                 self.status = TradeStatus.TP3_HIT
                 self._close(self.tp3)
@@ -135,12 +139,12 @@ class ActiveTrade:
             if not self.tp2_hit and price <= self.tp2:
                 self.tp2_hit = True
                 self.status = TradeStatus.TP2_HIT
-                self._close(self.tp2)
+                # Partial close — trade stays open (remaining 20%)
                 return "TP2_HIT"
             if not self.tp1_hit and price <= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
-                self._close(self.tp1)
+                # Partial close — trade stays open (remaining 50%)
                 return "TP1_HIT"
 
         return None

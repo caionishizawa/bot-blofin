@@ -13,22 +13,24 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NPK Sinais — Painel de Resultados</title>
+<title>sideradogcripto — Painel de Sinais</title>
 <style>
   :root {
-    --bg:      #060a12;
-    --bg2:     #0b1120;
-    --bg3:     #0f1829;
-    --panel:   #111d35;
-    --border:  #1a2d50;
-    --accent:  #00d4aa;
-    --accent2: #00b894;
-    --gold:    #f9ca24;
-    --green:   #00e676;
-    --red:     #ff3d57;
-    --white:   #e8f0fe;
-    --gray:    #5a6a8a;
-    --gray2:   #8899bb;
+    --bg:      #07090f;
+    --bg2:     #0b0e18;
+    --bg3:     #0f1220;
+    --panel:   #111828;
+    --border:  #1e2a45;
+    --accent:  #00e5ff;
+    --accent2: #00b8d4;
+    --gold:    #ffe600;
+    --green:   #00ff88;
+    --red:     #ff0066;
+    --magenta: #ff0066;
+    --purple:  #b44fff;
+    --white:   #c8d8f0;
+    --gray:    #4a6080;
+    --gray2:   #7090b0;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -53,8 +55,8 @@ HTML = """<!DOCTYPE html>
     content: '';
     position: fixed; inset: 0;
     background-image:
-      linear-gradient(rgba(0,212,170,.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(0,212,170,.03) 1px, transparent 1px);
+      linear-gradient(rgba(0,229,255,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,.025) 1px, transparent 1px);
     background-size: 40px 40px;
     pointer-events: none; z-index: 0;
   }
@@ -73,9 +75,10 @@ HTML = """<!DOCTYPE html>
   }
   .brand-logo {
     width: 36px; height: 36px; border-radius: 10px;
-    background: linear-gradient(135deg, var(--accent), #0077ff);
+    background: linear-gradient(135deg, #00e5ff, #b44fff);
     display: flex; align-items: center; justify-content: center;
     font-size: 18px; font-weight: 900; color: #000;
+    box-shadow: 0 0 12px rgba(0,229,255,.4);
   }
   .brand-name { font-size: 1.1rem; font-weight: 800; color: var(--white); letter-spacing: -.3px; }
   .brand-sub  { font-size: .7rem; color: var(--gray2); letter-spacing: 2px; text-transform: uppercase; }
@@ -103,7 +106,7 @@ HTML = """<!DOCTYPE html>
     position: relative; z-index: 1;
     text-align: center;
     padding: 60px 24px 40px;
-    background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(0,212,170,.12), transparent);
+    background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(0,229,255,.10), transparent);
   }
   .hero-tag {
     display: inline-flex; align-items: center; gap: 8px;
@@ -115,9 +118,10 @@ HTML = """<!DOCTYPE html>
   .hero h1 {
     font-size: clamp(2rem, 5vw, 3.5rem);
     font-weight: 900; line-height: 1.1;
-    background: linear-gradient(135deg, #fff 30%, var(--accent));
+    background: linear-gradient(135deg, #ffffff 20%, var(--accent) 60%, var(--purple));
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     background-clip: text; margin-bottom: 12px;
+    filter: drop-shadow(0 0 24px rgba(0,229,255,.25));
   }
   .hero-sub {
     font-size: 1.05rem; color: var(--gray2); max-width: 520px; margin: 0 auto 36px;
@@ -334,10 +338,10 @@ HTML = """<!DOCTYPE html>
 <!-- NAVBAR -->
 <nav class="navbar">
   <div class="navbar-brand">
-    <div class="brand-logo">N</div>
+    <div class="brand-logo">⚡</div>
     <div>
-      <div class="brand-name">NPK Sinais</div>
-      <div class="brand-sub">BloFin Futures Intelligence</div>
+      <div class="brand-name">sideradogcripto</div>
+      <div class="brand-sub">BloFin · Sinais & Futuros</div>
     </div>
   </div>
   <div class="nav-status">
@@ -350,11 +354,11 @@ HTML = """<!DOCTYPE html>
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-tag">⚡ Resultados em Tempo Real</div>
-  <h1>Sinais com<br>Precisão Cirúrgica</h1>
+  <div class="hero-tag">⚡ sideradogcripto · Ao Vivo</div>
+  <h1>Inteligência.<br>Precisão. Resultado.</h1>
   <p class="hero-sub">
-    Análise quantitativa com IA, gestão de risco profissional e
-    rastreamento de PNL em tempo real para o mercado de futuros.
+    Sinais gerados por IA com gestão de risco real.<br>
+    Cada entrada calculada. Cada stop protegido.
   </p>
 </section>
 
@@ -499,8 +503,8 @@ HTML = """<!DOCTYPE html>
 </main>
 
 <footer class="footer">
-  NPK Sinais &nbsp;•&nbsp; BloFin Futures &nbsp;•&nbsp;
-  Atualização automática a cada 30s &nbsp;•&nbsp;
+  ⚡ sideradogcripto &nbsp;•&nbsp; BloFin Futures &nbsp;•&nbsp;
+  Atualização a cada 30s &nbsp;•&nbsp;
   <span id="last-update">—</span>
 </footer>
 
@@ -713,12 +717,173 @@ setInterval(() => {
 load();
 setInterval(load, 30000);
 </script>
+
+<!-- ══════════════════════════════════════════════════
+     PRICING SECTION
+══════════════════════════════════════════════════ -->
+<section style="position:relative;z-index:1;padding:64px 32px;max-width:960px;margin:0 auto" id="pricing">
+  <div style="text-align:center;margin-bottom:48px">
+    <div style="display:inline-block;padding:6px 16px;background:rgba(0,229,255,.08);border:1px solid rgba(0,229,255,.2);border-radius:20px;font-size:12px;color:var(--accent);letter-spacing:1px;margin-bottom:16px">PLANOS</div>
+    <h2 style="font-size:clamp(24px,4vw,36px);font-weight:800;margin-bottom:12px">Escolha seu acesso</h2>
+    <p style="color:var(--gray2);font-size:15px">Sinais profissionais para qualquer tamanho de banca.</p>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px">
+
+    <!-- FREE -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:32px">
+      <div style="font-size:13px;color:var(--gray2);letter-spacing:1px;margin-bottom:8px">FREE</div>
+      <div style="font-size:32px;font-weight:900;margin-bottom:4px">R$ 0</div>
+      <div style="font-size:12px;color:var(--gray);margin-bottom:24px">para sempre</div>
+      <ul style="list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+        <li style="font-size:14px;color:var(--white)">✅ Sinais em tempo real</li>
+        <li style="font-size:14px;color:var(--white)">✅ Direção e tipo de setup</li>
+        <li style="font-size:14px;color:var(--white)">✅ Indicador de confiança</li>
+        <li style="font-size:14px;color:var(--white)">✅ Grupo Telegram</li>
+        <li style="font-size:14px;color:var(--gray)">🔒 Stop Loss exato</li>
+        <li style="font-size:14px;color:var(--gray)">🔒 Alvos e gestão</li>
+        <li style="font-size:14px;color:var(--gray)">🔒 Análise de IA</li>
+        <li style="font-size:14px;color:var(--gray)">🔒 Chat com IA</li>
+      </ul>
+      <a href="#" style="display:block;text-align:center;padding:12px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--gray2);text-decoration:none;font-size:14px;font-weight:600">Acesso gratuito</a>
+    </div>
+
+    <!-- PRO MENSAL -->
+    <div style="background:linear-gradient(145deg,rgba(0,229,255,.06),rgba(180,79,255,.06));border:1px solid var(--accent);border-radius:16px;padding:32px;position:relative;overflow:hidden">
+      <div style="position:absolute;top:0;right:0;background:var(--accent);color:#000;font-size:11px;font-weight:800;padding:4px 12px;border-radius:0 16px 0 12px;letter-spacing:.5px">MAIS POPULAR</div>
+      <div style="font-size:13px;color:var(--accent);letter-spacing:1px;margin-bottom:8px">PRO</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+        <span style="font-size:32px;font-weight:900;color:var(--accent)">R$ 120</span>
+        <span style="font-size:13px;color:var(--gray2)">/mês</span>
+      </div>
+      <div style="font-size:12px;color:var(--gray);margin-bottom:24px">≈ US$ 19 · cancele quando quiser</div>
+      <ul style="list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+        <li style="font-size:14px;color:var(--white)">✅ Tudo do Free</li>
+        <li style="font-size:14px;color:var(--white)">✅ Stop Loss + 3 alvos exatos</li>
+        <li style="font-size:14px;color:var(--white)">✅ Tabela: quanto entrar por banca</li>
+        <li style="font-size:14px;color:var(--white)">✅ Análise completa por IA</li>
+        <li style="font-size:14px;color:var(--accent)">✅ Chat com IA 24/7</li>
+        <li style="font-size:14px;color:var(--white)">✅ Tracking de trades</li>
+        <li style="font-size:14px;color:var(--white)">✅ Dashboard pessoal</li>
+        <li style="font-size:14px;color:var(--white)">✅ Análise macro (toda 2ª feira)</li>
+      </ul>
+      <a href="#" onclick="openChat()" style="display:block;text-align:center;padding:13px;background:var(--accent);color:#000;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;letter-spacing:.3px">Assinar PRO →</a>
+    </div>
+
+    <!-- PRO ANUAL -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:32px;position:relative">
+      <div style="position:absolute;top:0;right:0;background:var(--purple);color:#fff;font-size:11px;font-weight:800;padding:4px 12px;border-radius:0 16px 0 12px;letter-spacing:.5px">-20%</div>
+      <div style="font-size:13px;color:var(--purple);letter-spacing:1px;margin-bottom:8px">PRO ANUAL</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">
+        <span style="font-size:32px;font-weight:900">R$ 96</span>
+        <span style="font-size:13px;color:var(--gray2)">/mês</span>
+      </div>
+      <div style="font-size:12px;color:var(--green);margin-bottom:4px">≈ R$ 1.152/ano  <s style="color:var(--gray)">R$ 1.440</s></div>
+      <div style="font-size:12px;color:var(--gray);margin-bottom:24px">2 meses grátis</div>
+      <ul style="list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+        <li style="font-size:14px;color:var(--white)">✅ Todos os recursos PRO</li>
+        <li style="font-size:14px;color:var(--green)">✅ 20% de desconto</li>
+        <li style="font-size:14px;color:var(--green)">✅ Prioridade no suporte</li>
+        <li style="font-size:14px;color:var(--green)">✅ Acesso a novos recursos primeiro</li>
+      </ul>
+      <a href="#" style="display:block;text-align:center;padding:12px;background:linear-gradient(90deg,var(--purple),var(--accent));color:#fff;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800">Assinar Anual →</a>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════
+     CHAT IA — WIDGET FLUTUANTE
+══════════════════════════════════════════════════ -->
+<div id="chat-bubble" onclick="toggleChat()" style="position:fixed;bottom:28px;right:28px;z-index:999;width:56px;height:56px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 24px rgba(0,229,255,.4);font-size:24px;transition:transform .2s">💬</div>
+
+<div id="chat-panel" style="display:none;position:fixed;bottom:96px;right:28px;z-index:998;width:360px;max-width:calc(100vw - 32px);background:var(--panel);border:1px solid var(--border);border-radius:20px;overflow:hidden;box-shadow:0 8px 48px rgba(0,0,0,.6)">
+  <div style="padding:16px 20px;background:var(--bg3);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+    <div style="width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--purple));border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px">⚡</div>
+    <div>
+      <div style="font-weight:700;font-size:14px">Assistente sideradogcripto</div>
+      <div style="font-size:11px;color:var(--green)">● Online · powered by IA</div>
+    </div>
+    <button onclick="toggleChat()" style="margin-left:auto;background:none;border:none;color:var(--gray);cursor:pointer;font-size:18px">×</button>
+  </div>
+
+  <div id="chat-messages" style="height:320px;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">
+    <div class="msg-bot" style="background:var(--bg3);border-radius:12px 12px 12px 4px;padding:10px 14px;font-size:13px;color:var(--white);max-width:85%;line-height:1.5">
+      Olá! Sou o assistente do sideradogcripto. Tire suas dúvidas sobre os sinais, gestão de risco ou como executar um trade. 👋
+    </div>
+  </div>
+
+  <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px">
+    <input id="chat-input" type="text" placeholder="Pergunte sobre o trade..." onkeydown="if(event.key==='Enter')sendChat()"
+      style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--white);font-size:13px;outline:none">
+    <button onclick="sendChat()" style="background:var(--accent);border:none;border-radius:10px;width:40px;cursor:pointer;font-size:16px">→</button>
+  </div>
+</div>
+
+<script>
+let chatHistory = [];
+let chatOpen = false;
+
+function toggleChat() {
+  chatOpen = !chatOpen;
+  document.getElementById('chat-panel').style.display = chatOpen ? 'block' : 'none';
+  document.getElementById('chat-bubble').style.transform = chatOpen ? 'scale(0.9)' : 'scale(1)';
+  if (chatOpen) document.getElementById('chat-input').focus();
+}
+
+function openChat() { if (!chatOpen) toggleChat(); }
+
+function appendMsg(text, role) {
+  const box = document.getElementById('chat-messages');
+  const div = document.createElement('div');
+  const isBot = role === 'bot';
+  div.style.cssText = `background:${isBot ? 'var(--bg3)' : 'rgba(0,229,255,.1)'};border-radius:${isBot ? '12px 12px 12px 4px' : '12px 12px 4px 12px'};padding:10px 14px;font-size:13px;color:var(--white);max-width:85%;line-height:1.5;${isBot ? '' : 'align-self:flex-end;margin-left:auto'}`;
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  appendMsg(msg, 'user');
+  chatHistory.push({ role: 'user', content: msg });
+
+  const thinking = appendMsg('⏳ Pensando...', 'bot');
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, history: chatHistory.slice(-6) })
+    });
+    const d = await r.json();
+    thinking.textContent = d.ok ? d.reply : '❌ ' + (d.error || 'Erro na IA');
+    if (d.ok) chatHistory.push({ role: 'assistant', content: d.reply });
+  } catch(e) {
+    thinking.textContent = '❌ Erro de conexão';
+  }
+}
+</script>
+
 </body>
 </html>"""
 
 
 def create_dashboard(bot_instance):
     """Cria e retorna o app aiohttp do dashboard."""
+
+    import os as _os
+    _DASHBOARD_SECRET = _os.getenv("DASHBOARD_SECRET", "")
+
+    def _check_auth(request) -> bool:
+        if not _DASHBOARD_SECRET:
+            return True  # sem secret configurado, permite (apenas dev local)
+        token = request.headers.get("X-Dashboard-Token", "")
+        return token == _DASHBOARD_SECRET
 
     async def index(request):
         return web.Response(text=HTML, content_type="text/html")
@@ -763,6 +928,8 @@ def create_dashboard(bot_instance):
         })
 
     async def api_newtrade(request):
+        if not _check_auth(request):
+            return web.json_response({"ok": False, "error": "Unauthorized"}, status=401)
         try:
             data      = await request.json()
             pair      = data["pair"].upper()
@@ -846,9 +1013,129 @@ def create_dashboard(bot_instance):
         except Exception as e:
             return web.Response(status=500, text=str(e))
 
+    async def api_chat(request):
+        """Chat com IA (Haiku) para tirar dúvidas sobre trading — endpoint PRO."""
+        try:
+            data    = await request.json()
+            message = data.get("message", "").strip()
+            history = data.get("history", [])  # [{role,content}]
+            if not message:
+                return web.json_response({"ok": False, "error": "Mensagem vazia"})
+
+            api_key = __import__("os").environ.get("ANTHROPIC_API_KEY")
+
+            SYSTEM_PROMPT = """Você é o assistente de trading do sideradogcripto — canal de sinais de cripto com foco em educação financeira para iniciantes e traders intermediários.
+
+Seu papel:
+- Responder dúvidas sobre os sinais enviados (como entrar, onde colocar stop, quanto alocar)
+- Explicar conceitos de trading de forma simples (RSI, suporte, resistência, R:R, order block)
+- Ajudar o usuário a entender e executar os trades do canal
+- NÃO dar conselhos financeiros pessoais nem prometer retornos
+- NÃO recomendar trades fora dos sinais do canal
+
+Tom: direto, educativo, sem jargão desnecessário. Português. Máximo 3 parágrafos curtos por resposta."""
+
+            messages = [{"role": m["role"], "content": m["content"]} for m in history[-6:]]
+            messages.append({"role": "user", "content": message})
+
+            if api_key:
+                try:
+                    import anthropic
+                    client = anthropic.AsyncAnthropic(api_key=api_key)
+                    resp = await client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=400,
+                        system=SYSTEM_PROMPT,
+                        messages=messages,
+                    )
+                    reply = resp.content[0].text.strip()
+                    return web.json_response({"ok": True, "reply": reply, "model": "haiku"})
+                except Exception as e:
+                    pass  # fallback to MLX
+
+            # Fallback MLX local
+            try:
+                from modules.llm_analyst import _mlx_model, _mlx_tokenizer, _MLX_MODEL_ID
+                import asyncio
+                from functools import partial
+                m = _mlx_model
+                t = _mlx_tokenizer
+                if m is None:
+                    from mlx_lm import load
+                    m, t = load(_MLX_MODEL_ID)
+                from mlx_lm import generate as mlx_gen
+                full_prompt = SYSTEM_PROMPT + "\n\nPergunta: " + message
+                fn = partial(mlx_gen, m, t, prompt=full_prompt, max_tokens=300, verbose=False)
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, fn)
+                for stop in ["<|endoftext|>", "<|im_end|>", "\nHuman:", "\nUser:"]:
+                    if stop in result:
+                        result = result[:result.index(stop)]
+                return web.json_response({"ok": True, "reply": result.strip(), "model": "mlx-local"})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": f"IA indisponível: {e}"})
+
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)})
+
+    async def api_pricing(request):
+        """Retorna planos e preços do SaaS."""
+        return web.json_response({
+            "plans": [
+                {
+                    "id": "free",
+                    "name": "Free",
+                    "price_brl": 0,
+                    "price_usd": 0,
+                    "features": [
+                        "Sinais em tempo real (zona de entrada)",
+                        "Direção e tipo de setup",
+                        "Indicador de confiança",
+                        "Acesso ao canal Telegram",
+                    ],
+                    "locked": ["Stop Loss exato", "Alvos precisos", "Tabela de gestão", "Análise IA", "Chat IA", "Tracking pessoal"]
+                },
+                {
+                    "id": "pro_monthly",
+                    "name": "PRO Mensal",
+                    "price_brl": 120,
+                    "price_usd": 19,
+                    "billing": "mensal",
+                    "features": [
+                        "Tudo do Free",
+                        "Stop Loss e 3 alvos exatos",
+                        "Tabela de quanto entrar (5 bancas)",
+                        "Análise completa por IA",
+                        "Chat com IA para tirar dúvidas",
+                        "Tracking automático de todos os sinais",
+                        "Dashboard pessoal com equity curve",
+                        "Resumo semanal personalizado",
+                        "Análise macro toda segunda-feira",
+                    ],
+                },
+                {
+                    "id": "pro_annual",
+                    "name": "PRO Anual",
+                    "price_brl": 1152,
+                    "price_usd": 182,
+                    "price_brl_monthly": 96,
+                    "price_usd_monthly": 15.2,
+                    "billing": "anual",
+                    "discount_pct": 20,
+                    "features": "Igual PRO Mensal + 20% de desconto",
+                }
+            ]
+        })
+
+    async def health(request):
+        return web.Response(text="ok")
+
     app = web.Application()
+    app.router.add_get("/health", health)
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_post("/api/newtrade", api_newtrade)
     app.router.add_get("/api/share", api_share)
+    app.router.add_post("/api/chat", api_chat)
+    app.router.add_get("/api/pricing", api_pricing)
     return app

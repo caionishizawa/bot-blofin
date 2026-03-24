@@ -14,7 +14,8 @@ main          ← produção estável, só merges testados
   │     ├── fase/05-tracker         ← monitoramento real-time
   │     ├── fase/06-telegram        ← bot + comandos
   │     ├── fase/07-performance     ← PNL + relatórios
-  │     └── fase/08-polish          ← refinamento + deploy
+  │     ├── fase/08-polish          ← refinamento + deploy
+  │     └── fase/09-agente          ← agente educacional com memória
   │
   └── hotfix/*       ← correções urgentes em produção
 ```
@@ -30,6 +31,7 @@ v0.5.0  — Tracker ativo
 v0.6.0  — Telegram bot rodando
 v0.7.0  — Performance DB completo
 v0.8.0  — Beta (tudo integrado)
+v0.9.0  — Agente educacional ativo
 v1.0.0  — Produção
 ```
 
@@ -170,6 +172,102 @@ python tests/test_performance.py
 - [ ] Rate limiting inteligente
 - [ ] Logging melhorado
 - [ ] Documentação de deploy
+
+---
+
+### FASE 9 — Agente Educacional com Memória
+**Branch**: `fase/09-agente`
+**Status**: 🔮 PLANEJADO — implementar após Fase 8 e primeiros pagantes
+
+**Visão:**
+Um agente conversacional no Telegram (mesmo bot) que responde dúvidas
+de trading com base no conhecimento acumulado do sideradog.
+Não substitui os sinais — complementa como professor/mentor 24h.
+
+**Casos de uso principais:**
+- "Como validar um sinal antes de entrar?"
+- "O que é confluência? Quantas preciso?"
+- "Qual o tamanho de posição ideal para iniciante?"
+- "Esse setup que postaram é confiável?"
+- "Explica o que é RSI / MACD / Bollinger"
+- "Errei o stop, o que aprendo disso?"
+
+**Arquitetura planejada:**
+
+```
+[Usuário manda pergunta no DM do bot]
+         │
+         ▼
+[Agente Claude Sonnet/Haiku]
+    ├── Contexto 1: Base de conhecimento do sideradog
+    │     └── Arquivo(s) MD com tudo que ele já ensinou:
+    │           - setups favoritos dele
+    │           - regras de gestão de risco
+    │           - como ele valida entradas
+    │           - erros comuns de iniciante
+    │           - filosofia de trade dele
+    │
+    ├── Contexto 2: Memória do usuário (por Telegram ID)
+    │     └── SQLite/PostgreSQL: histórico de perguntas,
+    │           nível percebido (iniciante/intermediário),
+    │           dúvidas recorrentes, última interação
+    │
+    ├── Contexto 3: Sinais recentes do bot
+    │     └── Injeta os últimos 3-5 sinais como contexto
+    │           para o agente referenciar exemplos reais
+    │
+    └── Resposta personalizada em PT-BR
+          + disclaimer obrigatório ao final
+          + sugestão de próximo passo (ex: "veja o sinal de hoje")
+```
+
+**Base de conhecimento (knowledge base):**
+- Arquivo: `src/agent/knowledge_base.md`
+- Populado manualmente pelo sideradog ao longo do tempo
+- Estruturado por tópicos: setups, gestão, psicologia, iniciantes
+- Claude usa como RAG simplificado (inject no system prompt)
+- Evolui conforme o produto cresce
+
+**Memória por usuário:**
+- Tabela `agent_memory` no PostgreSQL
+- Campos: `telegram_id`, `level`, `last_topics[]`, `summary`, `updated_at`
+- A cada conversa, atualiza o summary com o que o usuário já aprendeu
+- Personaliza respostas: iniciante recebe mais contexto, avançado vai direto
+
+**Acesso:**
+- FREE: 3 perguntas/dia ao agente
+- VIP: ilimitado + respostas mais detalhadas (Sonnet ao invés de Haiku)
+
+**Comando Telegram:**
+```
+/ask Como valido uma entrada com confluência?
+/ask O que você acha desse setup: RSI 28 + preço no suporte?
+/mentor  → abre modo conversa livre (VIP only)
+```
+
+**Entregáveis da Fase 9:**
+- [ ] `src/agent/agent.py` — orquestrador do agente
+- [ ] `src/agent/knowledge_base.md` — base inicial populada pelo sideradog
+- [ ] `src/agent/memory.py` — leitura/escrita de memória por usuário
+- [ ] Integração com bot.py (comando /ask e /mentor)
+- [ ] Tabela `agent_memory` no schema PostgreSQL
+- [ ] Lógica de limite (3/dia FREE, ilimitado VIP)
+- [ ] Disclaimer automático em toda resposta
+
+**Teste**:
+```bash
+python tests/test_agent.py
+# Deve: responder pergunta usando knowledge base,
+#        lembrar contexto da conversa anterior,
+#        aplicar limite correto por tier
+```
+
+**Notas para quando chegar nessa fase:**
+- Pedir para o sideradog gravar um documento com tudo que ele ensina:
+  setups, regras de gestão, erros comuns, como ele analisa o mercado
+- Esse documento vira a personalidade e conhecimento do agente
+- Quanto mais rico o knowledge_base.md, melhor o agente
+- Considerar fine-tuning futuro quando tiver 1000+ perguntas reais
 
 ---
 
