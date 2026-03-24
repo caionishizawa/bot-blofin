@@ -154,6 +154,12 @@ Bot agenda 6 missões/dia automaticamente baseado no dia da semana:
 | `/api/share` | GET | ❌ | Card PNL do último trade |
 | `/api/pricing` | GET | ❌ | Planos e preços |
 | `/api/chat` | POST | ❌ | Análise LLM de sinal |
+| `/api/subscribers` | GET | ✅ | Lista assinantes VIP ativos |
+| `/api/vip/add` | POST | ✅ | Adiciona VIP manual via API |
+| `/api/vip/revoke` | POST | ✅ | Revoga acesso VIP via API |
+| `/webhook/hotmart` | POST | 🔑 | Webhook Hotmart (assinatura HMAC) |
+| `/webhook/stripe` | POST | 🔑 | Webhook Stripe (HMAC-SHA256) |
+| `/webhook/mercadopago` | POST | 🔑 | Webhook Mercado Pago |
 
 **Auth**: Header `X-Dashboard-Token: sideradog2026!blofin`
 
@@ -208,12 +214,33 @@ Receita adicional (passiva):
 - ✅ Fase 6: Telegram Bot (7+ comandos, FREE/VIP channels)
 - ✅ Fase 7: Performance DB (PNL, win rate, equity curve)
 - ✅ Fase 8: Deploy produção (Docker, PostgreSQL, Render, health check)
+- ✅ Fase 9: Agente Educacional (Claude Haiku FREE / Sonnet VIP, /ask, /mentor, knowledge base)
 
 ---
 
 ## PRÓXIMAS FASES
 
-### Fase 9 — Agente Educacional com Memória (PLANEJADO)
+### Fase 9 — Agente Educacional com Memória ✅ CONCLUÍDO (24/03/2026)
+
+Arquivos:
+- `src/agent/agent.py` — Claude Haiku (FREE) / Sonnet (VIP)
+- `src/agent/knowledge_base.md` — base de conhecimento (alimentar continuamente)
+- `src/agent/memory.py` — contador diário + tópicos por usuário
+- Tabela `agent_memory` no PostgreSQL/SQLite
+
+Comandos novos:
+- `/ask pergunta` — FREE: 3/dia | VIP: ilimitado
+- `/mentor` — modo conversa VIP (Sonnet)
+- `/addvip <id>` — admin libera VIP
+- `/removevip <id>` — admin remove VIP
+- `/reloadkb` — admin recarrega knowledge base sem restart
+
+Para alimentar a base de conhecimento:
+1. Edite `src/agent/knowledge_base.md` com novos setups, aprendizados, exemplos reais
+2. Envie `/reloadkb` no bot (sem precisar reiniciar)
+3. O agente começa a usar o novo conteúdo imediatamente
+
+### Fase 9-NEXT — Enriquecer Knowledge Base (EM ANDAMENTO)
 Bot responde dúvidas de trading baseado no conhecimento do sideradog.
 
 ```
@@ -278,6 +305,60 @@ git add -A && git commit -m "feat: descrição" && git push origin main
 | Porta hardcoded (não subia no Render) | `bot.py` | Lê `PORT` env var |
 | DATABASE_URL interno não resolvia | `performance.py` | SSL + fallback SQLite |
 | Modelo Opus (caro) | `llm_analyst.py` | Trocado para Haiku |
+
+---
+
+## OBJETIVO: AUTOMAÇÃO COMPLETA (estado alvo)
+
+### Pipeline de sinal — 100% automático
+
+```
+[SCHEDULER — 6x/dia]
+    ↓
+BloFin API (OHLCV, orderbook)
+    ↓
+Scanner (12 indicadores) → confluência ≥ 3 → qualidade ≥ 72%
+    ↓
+Claude Haiku → análise PT-BR (contexto, catalisadores, risco)
+    ↓
+Chart Generator → TradingView dark (candles + indicadores + níveis)
+    ↓
+── VIP Telegram: sinal completo (entry, SL, TP1/2/3, análise, chart)
+    ↓
+Trade Tracker (loop 60s): monitora SL/TP em tempo real
+    ↓
+Quando fecha (SL ou TP3):
+    ↓
+── PNL Share: card visual de resultado
+── FREE Telegram: resultado pós-fato + CTA "quero pegar antes → link VIP"
+── Performance DB: salva PNL, win rate, equity curve
+```
+
+### Status de automação hoje (24/03/2026)
+
+| Etapa | Status | Observação |
+|---|---|---|
+| Scanner 12 indicadores | ✅ AUTO | 6 missões/dia agendadas |
+| Claude Haiku análise | ✅ AUTO | ~$0.15/mês |
+| Chart TradingView | ✅ AUTO | dark theme |
+| Sinal VIP Telegram | ✅ AUTO | antes do trade |
+| Trade Tracker SL/TP | ✅ AUTO | loop 60s, preços BloFin |
+| PNL cálculo | ✅ AUTO | TP parcial 50/30/20% |
+| FREE teaser pós-fato | ✅ AUTO | quando trade fecha |
+| Performance DB (PNL) | ✅ AUTO | PostgreSQL prod |
+| Health check admin | ✅ AUTO | alerta se 25h sem sinal |
+| Liberar acesso VIP | ❌ MANUAL | admin faz manualmente |
+| Checkout $39/mês | ❌ PENDENTE | Fase 10 |
+| Landing page vendas | ❌ PENDENTE | Fase 10 |
+| Canal FREE separado | ❌ PENDENTE | criar canal público |
+| BloFin API keys | ❌ PENDENTE | só públicos hoje |
+
+### O que falta para monetizar (prioridade)
+
+1. **Canal FREE público separado** — criar no Telegram, trocar `TELEGRAM_FREE_CHANNEL_ID`
+2. **Landing page** — hero + prova social (resultados do bot) + CTA assinar VIP
+3. **Checkout** — Stripe ou Hotmart para PIX/cartão → webhook → libera VIP auto
+4. **Link de referral BloFin** — garantir que o CTA do FREE aponta para `https://partner.blofin.com/d/sideradog`
 
 ---
 
