@@ -924,8 +924,8 @@ class BloFinBot:
             await self._app.start()
             await self._app.updater.start_polling(drop_pending_updates=True)
 
-            # Dashboard web
-            dashboard_port = self.config.get("dashboard_port", 8080)
+            # Dashboard web — usa PORT do Render ou fallback 8080
+            dashboard_port = int(os.getenv("PORT", self.config.get("dashboard_port", 8080)))
             from dashboard import create_dashboard
             dash_app = create_dashboard(self)
             dash_runner = aiohttp_web.AppRunner(dash_app)
