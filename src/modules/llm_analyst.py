@@ -189,7 +189,7 @@ async def _analyze_with_claude(signal: dict, api_key: str, mode: str) -> str:
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
     message = await client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=200,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -303,7 +303,7 @@ async def analyze_weekly_macro(market_data: dict, api_key: str = None) -> str:
             import anthropic
             client = anthropic.AsyncAnthropic(api_key=api_key)
             message = await client.messages.create(
-                model="claude-opus-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=600,
                 messages=[{"role": "user", "content": prompt}],
             )
