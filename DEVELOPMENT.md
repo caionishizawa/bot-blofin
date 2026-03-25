@@ -163,15 +163,70 @@ python tests/test_performance.py
 
 ---
 
-### FASE 8 — Polish & Deploy
+### FASE 8 — Polish & Deploy ✅
 **Branch**: `fase/08-polish`
 **Entregáveis**:
-- [ ] Dockerfile + docker-compose
-- [ ] Testes end-to-end
-- [ ] Error handling robusto
-- [ ] Rate limiting inteligente
-- [ ] Logging melhorado
-- [ ] Documentação de deploy
+- [x] Dockerfile + docker-compose
+- [x] Deploy no Render com PostgreSQL externo
+- [x] Error handling robusto (try/except em todos os módulos críticos)
+- [x] Rate limiting + retry na BloFin API
+- [x] Logging estruturado (LOG_LEVEL env var)
+- [x] Health check `/health` — alerta admin se >25h sem sinal
+- [x] Fallback SQLite quando PostgreSQL indisponível
+- [x] Correção de bugs críticos (admin check, TP3 gap, breakeven, porta hardcoded)
+- [x] Dashboard web com painel de sinais e pricing
+
+---
+
+### FASE 10 — SaaS Completo (Checkout + Monetização)
+**Branch**: `fase/10-saas`
+**Status**: 🏗️ INFRAESTRUTURA PRONTA — aguardando configuração da plataforma de checkout
+
+**O que foi implementado:**
+- [x] Módulo de pagamento modular (`src/modules/payment/`)
+  - [x] `base.py` — interface abstrata para todos os providers
+  - [x] `hotmart.py` — webhook Hotmart com verificação de assinatura
+  - [x] `stripe_handler.py` — webhook Stripe com verificação HMAC-SHA256
+  - [x] `mercadopago_handler.py` — webhook Mercado Pago
+  - [x] `manager.py` — orquestrador: processa evento → libera VIP → notifica no Telegram
+- [x] Tabela `subscribers` no banco (PostgreSQL + SQLite)
+  - Campos: id, email, name, telegram_id, plan, status, platform, payment_id, expires_at
+- [x] Métodos DB: `add_subscriber`, `is_vip_subscriber`, `get_subscriber`, `list_subscribers`, `revoke_subscriber`, `expire_stale_subscribers`
+- [x] Endpoints de webhook no dashboard:
+  - `POST /webhook/hotmart`
+  - `POST /webhook/stripe`
+  - `POST /webhook/mercadopago`
+- [x] Endpoints de gestão de assinantes:
+  - `GET /api/subscribers` — lista VIPs ativos (admin)
+  - `POST /api/vip/add` — adiciona VIP manual via API
+  - `POST /api/vip/revoke` — revoga VIP via API
+- [x] `_is_vip_async()` no bot — checa banco em tempo real (não só env var)
+- [x] Comando `/minhaconta` — usuário consulta status e validade da assinatura
+
+**O que falta configurar (não código — só variáveis de ambiente):**
+
+| Plataforma | Variável | Onde pegar |
+|---|---|---|
+| Hotmart | `HOTMART_SECRET` | Ferramentas → Webhooks → Segurança |
+| Stripe | `STRIPE_WEBHOOK_SECRET` | Developers → Webhooks → Signing secret |
+| Mercado Pago | `MERCADOPAGO_ACCESS_TOKEN` | Suas integrações → Credenciais |
+
+**Como ativar Hotmart (passo a passo):**
+```
+1. Criar produto no Hotmart (R$ 120/mês ou R$ 1.152/ano)
+2. No checkout, adicionar campo personalizado: "Seu usuário no Telegram"
+3. Em Ferramentas → Webhooks → Adicionar:
+   URL: https://bot-blofin.onrender.com/webhook/hotmart
+   Eventos: PURCHASE_COMPLETE, PURCHASE_REFUNDED, SUBSCRIPTION_CANCELLATION
+4. Copiar o token de segurança → HOTMART_SECRET no Render
+5. Testar com compra de teste
+```
+
+**Entregáveis pendentes para completar a Fase 10:**
+- [ ] Landing page de vendas (hero + prova social + CTA)
+- [ ] Canal FREE público separado no Telegram
+- [ ] Configurar plataforma de checkout escolhida
+- [ ] Testar fluxo completo: compra → webhook → VIP automático
 
 ---
 

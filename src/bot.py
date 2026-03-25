@@ -1125,78 +1125,26 @@ class BloFinBot:
             )
 
     def _schedule_daily_scans(self) -> list:
-        """Gera missões de scan variando por dia da semana.
+        """Gera UMA missão por dia: portfolio 4H que seleciona 6 sinais com hedge
+        e os distribui em horários aleatórios ao longo do dia via _pending_signals.
 
-        Estratégia: foco em swing/longo prazo (4H).
-        Portfolio matinal: 1 scan 4H de 6 sinais com hedge (bias direcional).
-        Complementares ao longo do dia: 1H swing + 1 sniper oportunístico.
-        Total: ~7 sinais por dia.
-
-        Templates: (anchor_time, spread_min, bar, mode, max_signals)
+        Fim de semana: portfolio reduzido de 4 sinais.
         """
         today   = date.today()
         weekday = today.weekday()  # 0=Seg … 6=Dom
 
-        if weekday in (5, 6):  # Fim de semana — portfolio mais leve
-            templates = [
-                (time(9, 30),  20, "4H", "portfolio", 4),   # portfolio 4 sinais
-                (time(14,  0), 15, "15m", "scalp",    2),   # scalp tarde
-                (time(20,  0), 20, "1H", "swing",     1),   # sniper noturno
-            ]
-            bonus_chance = 0.20
+        # Fim de semana: portfolio menor (mercado menos líquido)
+        n_signals = 4 if weekday in (5, 6) else 6
 
-        elif weekday == 0:  # Segunda — portfolio de abertura de semana
-            templates = [
-                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio semanal completo
-                (time(11, 0),  10, "15m", "scalp",    2),   # scalp manhã
-                (time(13, 30), 20, "1H", "swing",     1),   # 1H tarde
-                (time(17,  0), 15, "4H", "swing",     1),   # 4H americano abre
-                (time(21,  0), 20, "1H", "swing",     1),   # noturno
-            ]
-            bonus_chance = 0.30
-
-        elif weekday in (1, 3):  # Terça/Quinta — dias de swing
-            templates = [
-                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
-                (time(11, 30), 10, "15m", "scalp",    2),   # scalp manhã
-                (time(14,  0), 20, "1H", "swing",     1),   # oportunidade tarde
-                (time(18, 30), 20, "4H", "swing",     1),   # 4H europeu fecha
-                (time(21, 30), 20, "1H", "swing",     1),   # noturno americano
-            ]
-            bonus_chance = 0.35
-
-        else:  # Quarta/Sexta — dias ativos
-            templates = [
-                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
-                (time(11, 0),  10, "15m", "scalp",    2),   # scalp manhã
-                (time(12, 30), 20, "1H", "swing",     1),   # almoço Europa
-                (time(15, 30), 15, "4H", "swing",     1),   # abertura NY
-                (time(19,  0), 10, "30m", "scalp",    2),   # scalp americano
-                (time(20,  0), 20, "1H", "swing",     2),   # noturno
-            ]
-            bonus_chance = 0.40
-
-        missions = []
-        for anchor_t, spread, bar, mode, max_sigs in templates:
-            base   = datetime.combine(today, anchor_t)
-            offset = random.randint(-spread // 2, spread)  # assimétrico: não adianta muito
-            missions.append({
-                "time":        base + timedelta(minutes=offset),
-                "bar":         bar,
-                "mode":        mode,
-                "max_signals": max_sigs,
-            })
-
-        # Scan sniper bônus (alta probabilidade, qualquer hora)
-        if random.random() < bonus_chance:
-            bonus_h = random.randint(10, 21)
-            bonus_m = random.randint(0, 59)
-            missions.append({
-                "time":        datetime.combine(today, time(bonus_h, bonus_m)),
-                "bar":         "4H",
-                "mode":        "swing",
-                "max_signals": 1,
-            })
+        # Horário do scan de seleção: entre 08:45 e 09:15 (aleatório)
+        base   = datetime.combine(today, time(9, 0))
+        offset = random.randint(-15, 15)
+        missions = [{
+            "time":        base + timedelta(minutes=offset),
+            "bar":         "4H",
+            "mode":        "portfolio",
+            "max_signals": n_signals,
+        }]
 
         missions.sort(key=lambda m: m["time"])
         self._today_schedule = [m["time"] for m in missions]
@@ -1221,9 +1169,10 @@ class BloFinBot:
             try:
                 now = datetime.now()
 
-                # Virada do dia — gera nova agenda
+                # Virada do dia — gera nova agenda e limpa fila pendente do dia anterior
                 if now.date() != current_day:
                     current_day = now.date()
+                    self._pending_signals.clear()
                     missions = self._schedule_daily_scans()
 
                     # Domingo 20h → resumo semanal automático
