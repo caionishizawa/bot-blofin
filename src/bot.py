@@ -85,7 +85,8 @@ class BloFinBot:
         self.admin_id         = os.getenv("TELEGRAM_ADMIN_ID", "")
         self._last_signal_at: Optional[datetime] = None
         self.ref_link  = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
-        self.calc_link = os.getenv("CALCULATOR_LINK", "")
+        self.calc_link  = os.getenv("CALCULATOR_LINK", "")
+        self.thread_id  = int(os.getenv("TELEGRAM_THREAD_ID", "0")) or None
         self.bankroll = float(self.config.get("starting_bankroll", 1000.0))
         self.admin_ids = set(filter(None, os.getenv("ADMIN_IDS", "").split(",")))
         self._today_schedule: list = []
@@ -99,6 +100,9 @@ class BloFinBot:
 
         # Garante que o portfolio só roda UMA vez por dia, mesmo com restart/redeploy
         self._portfolio_sent_date: str = ""
+
+        # Mensagem de bom dia — enviada uma vez por dia às 08:00 BRT (11:00 UTC)
+        self._morning_sent_date: str = ""
 
         # Swing: terça e quinta, uma vez por dia cada
         self._swing_days = {1, 3}  # Monday=0 … Sunday=6 → terça=1, quinta=3
@@ -127,19 +131,20 @@ class BloFinBot:
         if not target:
             logger.warning("TELEGRAM_CHANNEL_ID não configurado — mensagem ignorada")
             return
+        # Usa thread_id quando enviando para o canal principal
+        thread = self.thread_id if (not chat_id or chat_id == self.free_channel_id or chat_id == self.channel_id) else None
         try:
             bot: Bot = self._app.bot
             if photo:
                 photo.seek(0)
-                # Telegram caption limit: 1024 chars
                 caption = text[:1024] if text else ""
                 await bot.send_photo(
                     chat_id=target,
                     photo=photo,
                     caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
+                    message_thread_id=thread,
                 )
-                # If full text exceeds caption limit, send remainder as message
                 if len(text) > 1024:
                     remainder = text[1024:]
                     await bot.send_message(
@@ -147,6 +152,7 @@ class BloFinBot:
                         text=remainder,
                         parse_mode=ParseMode.MARKDOWN,
                         disable_web_page_preview=True,
+                        message_thread_id=thread,
                     )
             else:
                 await bot.send_message(
@@ -154,6 +160,7 @@ class BloFinBot:
                     text=text,
                     parse_mode=ParseMode.MARKDOWN,
                     disable_web_page_preview=True,
+                    message_thread_id=thread,
                 )
         except TelegramError as e:
             logger.error(f"Telegram erro ao enviar: {e}")
@@ -673,6 +680,41 @@ class BloFinBot:
     # ------------------------------------------------------------------
     # Lógica principal
     # ------------------------------------------------------------------
+
+    async def _send_morning_message(self):
+        """Envia mensagem de bom dia às 08:00 BRT com preço real do BTC."""
+        try:
+            # Busca preço e variação do BTC
+            candles = await self.api.get_candles("BTC-USDT", bar="1H", limit=2)
+            btc_price = 0.0
+            btc_change = 0.0
+            if candles and len(candles) >= 2:
+                from utils.indicators import candles_to_df
+                df = candles_to_df(candles)
+                btc_price  = float(df.iloc[-1]["close"])
+                btc_change = round((df.iloc[-1]["close"] - df.iloc[-2]["close"]) / df.iloc[-2]["close"] * 100, 2)
+
+            price_str  = f"${btc_price:,.0f}" if btc_price else "carregando..."
+            change_str = f"{btc_change:+.2f}%" if btc_price else ""
+            trend_str  = "lateral" if abs(btc_change) < 0.5 else ("com viés de alta" if btc_change > 0 else "com viés de baixa")
+
+            weekday_names = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+            weekday = weekday_names[datetime.now().weekday()]
+
+            msg = (
+                f"⚡ Bom dia — @sideradogcripto\n\n"
+                f"Iniciando o scan de hoje. BTC em {price_str} ({change_str}) — mercado {trend_str}.\n\n"
+                f"Hoje o bot vai selecionar as melhores oportunidades e mandar ao longo do dia.\n"
+                f"Fique atento."
+            )
+
+            target = self.free_channel_id or self.channel_id
+            if target:
+                await self._send(msg, chat_id=target)
+                logger.info(f"Mensagem de bom dia enviada — BTC {price_str}")
+
+        except Exception as e:
+            logger.error(f"Erro ao enviar mensagem de bom dia: {e}")
 
     async def _send_weekly_macro(self, weekday_name: str = "Segunda-feira"):
         """Coleta dados de mercado + Fear&Greed, gera análise macro e entradas de convicção."""
@@ -1200,6 +1242,7 @@ class BloFinBot:
                     current_day = now.date()
                     self._pending_signals.clear()
                     self._portfolio_sent_date = ""
+                    self._morning_sent_date = ""
                     missions = self._schedule_daily_scans()
 
                     # Domingo 20h → resumo semanal automático
@@ -1235,6 +1278,12 @@ class BloFinBot:
                                     await self._send_weekly_macro(weekday_name="Quinta-feira")
                         except Exception as e:
                             logger.warning(f"Erro ao checar volatilidade BTC: {e}")
+
+                # 08:00 BRT (11:00 UTC) → mensagem de bom dia com preço do BTC
+                today_str = now.date().isoformat()
+                if now.hour == 11 and self._morning_sent_date != today_str:
+                    self._morning_sent_date = today_str
+                    await self._send_morning_message()
 
                 if self.running:
                     # Atualiza trades ativos a cada tick
