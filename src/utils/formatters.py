@@ -1,7 +1,7 @@
 """
-Telegram Message Formatters — sideradogcripto whitelabel.
-VIP: sinal completo com análise, gráfico e personalidade.
-FREE: sinal castrado com FOMO para upgrade.
+Telegram Message Formatters — sideradogcripto.
+Sinais completos para todos. FREE e VIP recebem o mesmo sinal.
+Diferenciação: /ask (VIP ilimitado), timing e portfolio diário.
 """
 
 import random
@@ -27,7 +27,10 @@ SETUP_META = {
 
 # BloFin fee
 BLOFIN_TAKER_FEE = 0.0006
-TP_SIZING = {"tp1": 50, "tp2": 30, "tp3": 20}
+TP_SIZING = {"tp1": 20, "tp2": 50, "tp3": 30}
+# TP1 = 20%: parcial rápido + mover SL para breakeven
+# TP2 = 50%: realização principal
+# TP3 = 30%: runner — deixa o trade trabalhar
 
 # ─── Personalidades ────────────────────────────────────────────────────────
 # 5 vozes que rotacionam. Cada uma tem frases de abertura por contexto.
@@ -249,11 +252,67 @@ def _net_return(entry: float, target: float, direction: str, leverage: int) -> f
 # ─── Formato VIP ───────────────────────────────────────────────────────────
 
 def format_signal_message(signal: dict, analysis: str = "", ref_link: str = "",
-                          mode: str = "scalp", tier: str = "vip",
+                          mode: str = "swing", tier: str = "full",
                           recent_wins: int = 0, recent_losses: int = 0) -> str:
-    if tier == "free":
-        return _format_free(signal, ref_link)
-    return _format_vip(signal, analysis, ref_link, mode, recent_wins, recent_losses)
+    """Sinal completo — mesmo formato para FREE e VIP."""
+    return _format_full(signal, analysis, ref_link, mode, recent_wins, recent_losses)
+
+
+def format_portfolio_header(signals: list, bias: str, ref_link: str = "") -> str:
+    """Mensagem de abertura do portfolio diário com viés e estrutura de hedge."""
+    n_longs  = sum(1 for s in signals if s.get("direction") == "LONG")
+    n_shorts = sum(1 for s in signals if s.get("direction") == "SHORT")
+    total    = n_longs + n_shorts
+    if total == 0:
+        return ""
+
+    long_pct  = round(n_longs / total * 100)
+    short_pct = 100 - long_pct
+    net_exp   = long_pct - short_pct  # ex: +33% = net long
+
+    bias_map = {
+        "bullish": ("📈 ALTA", "🟢"),
+        "bearish": ("📉 BAIXA", "🔴"),
+        "neutro":  ("↔️ NEUTRO", "🟡"),
+    }
+    bias_label, bias_emoji = bias_map.get(bias, ("↔️ NEUTRO", "🟡"))
+
+    net_label = f"+{net_exp}% long" if net_exp > 0 else f"{net_exp}% short" if net_exp < 0 else "neutro"
+
+    # Risco total alocado (soma dos risk_pct de cada sinal)
+    total_risk = round(sum(float(s.get("risk_pct", 1.5)) for s in signals), 1)
+
+    # Timeframe majoritário
+    tfs = [s.get("timeframe", "4H") for s in signals]
+    main_tf = max(set(tfs), key=tfs.count)
+
+    now = datetime.now(timezone.utc).strftime("%d/%m")
+    weekday_names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    weekday = weekday_names[datetime.now().weekday()]
+
+    lines = [
+        f"⚡ *{BRAND_NAME}* — PORTFOLIO {now} ({weekday})",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{bias_emoji} Viés de mercado: *{bias_label}*",
+        f"",
+        f"├ {n_longs} operações LONG  ({long_pct}%)",
+        f"└ {n_shorts} operações SHORT ({short_pct}%)",
+        f"",
+        f"📐 Hedge parcial — net exposure: `{net_label}`",
+        f"⚠️ Risco total alocado: `{total_risk}% da banca`",
+        f"⏱ Timeframe: `{main_tf}` _(swing/longo prazo)_",
+        f"",
+        f"_Estrutura: se acertar o viés você ganha nas {n_longs if bias == 'bullish' else n_shorts} posições maiores._",
+        f"_Se errar, as {n_shorts if bias == 'bullish' else n_longs} posições opostas protegem parte da banca._",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"_{total} sinais abaixo 👇_",
+    ]
+
+    if ref_link:
+        lines += [f"", f"🔗 [Abrir conta BloFin para operar]({ref_link})"]
+
+    return "\n".join(lines)
 
 
 def _pos_table(entry: float, sl: float, direction: str, risk_pct: float = 1.5,
@@ -273,14 +332,14 @@ def _pos_table(entry: float, sl: float, direction: str, risk_pct: float = 1.5,
         b_str   = f"${b:,.0f}".replace(",", ".")
         pos_str = f"${pos:,.0f}".replace(",", ".")
         lines.append(f"  `{b_str:<8}` → posição `{pos_str}`  _(risco ${risk})_")
-    lines.append("_Fechar: 50% no Alvo 1 · 30% no Alvo 2 · 20% no Alvo 3_")
+    lines.append("_20% no A1 (+ move SL) · 50% no A2 · 30% no A3 (runner)_")
     if sizing_info:
         lines.append(f"_🧮 {sizing_info}_")
     return "\n".join(lines)
 
 
-def _format_vip(signal: dict, analysis: str, ref_link: str, mode: str,
-                recent_wins: int, recent_losses: int) -> str:
+def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
+                 recent_wins: int, recent_losses: int) -> str:
     direction  = signal["direction"]
     pair       = signal.get("pair", "N/A")
     tf         = signal.get("timeframe", "1H")
@@ -331,9 +390,9 @@ def _format_vip(signal: dict, analysis: str, ref_link: str, mode: str,
         f"📍 *Entrada*      `{_fmt_price(entry)}`",
         f"🛑 *Stop Loss*   `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
         f"──────────────────────────",
-        f"🎯 *Alvo 1*       `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_  · fechar 50%",
-        f"🎯 *Alvo 2*       `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar 30%",
-        f"🎯 *Alvo 3*       `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · fechar 20%",
+        f"🎯 *Alvo 1*       `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_  · 20% + mover SL → breakeven",
+        f"🎯 *Alvo 2*       `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar 50%",
+        f"🏆 *Alvo 3*       `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · deixar rodar 30%",
         f"",
         f"⚖️ R:R `{rr}:1` — {rr_label}  ·  📊 Conf: {conf_bar} {confidence}%",
         f"🕐 _{now}_",
@@ -367,104 +426,8 @@ def _format_vip(signal: dict, analysis: str, ref_link: str, mode: str,
     return "\n".join(lines)
 
 
-# ─── Formato FREE (castrado para gerar FOMO) ───────────────────────────────
-
-def _format_free(signal: dict, ref_link: str) -> str:
-    direction  = signal["direction"]
-    pair       = signal.get("pair", "N/A")
-    tf         = signal.get("timeframe", "1H")
-    entry      = signal.get("entry", 0)
-    confidence = signal.get("confidence", 0)
-    rr         = signal.get("rr_ratio", 0)
-
-    dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    dir_label = "LONG  ↑" if direction == "LONG" else "SHORT  ↓"
-    now       = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
-
-    # Mostra zona de entrada, não o preço exato
-    margin = entry * 0.003
-    zone_lo = _fmt_price(entry - margin)
-    zone_hi = _fmt_price(entry + margin)
-
-    # Quantidade de confluências (não revela quais)
-    conf_count = min(5, max(2, round(confidence / 20)))
-    conf_dots  = "●" * conf_count + "○" * (5 - conf_count)
-
-    # RR hint sem o número
-    if rr >= 4.5:
-        rr_hint = "muito alto 🔥"
-    elif rr >= 2.5:
-        rr_hint = "favorável"
-    else:
-        rr_hint = "moderado"
-
-    raw_setup = signal.get("setup_type", "scalp")
-    setup_label, _ = SETUP_META.get(raw_setup, SETUP_META["scalp"])
-
-    free_openings_by_setup = {
-        "sniper": [
-            "Setup sniper ativo. RR excepcional — detalhes só no VIP.",
-            "Esse tipo de entrada não aparece todo dia.",
-            "Stop cirúrgico, alvo estendido. Completo no VIP.",
-        ],
-        "swing": [
-            "Swing setup identificado no 4H. Análise completa no VIP.",
-            "Setup de médio prazo ativo. Alvos estendidos.",
-            "Trade de dias. Configuração no VIP.",
-        ],
-        "reversal": [
-            "Divergência identificada. Possível reversão em andamento.",
-            "Setup de reversão ativo. Análise técnica no VIP.",
-        ],
-        "breakout": [
-            "Rompimento identificado. Momentum a favor.",
-            "Breakout em estrutura relevante. Detalhes no VIP.",
-        ],
-        "retest": [
-            "Retest de zona rompida. Entrada clássica de tendência.",
-            "Preço retornou para testar estrutura — sinal ativo.",
-        ],
-        "premium": [
-            "Setup premium com múltiplas confluências.",
-            "Alta qualidade técnica detectada. Análise no VIP.",
-        ],
-    }
-    free_openings = free_openings_by_setup.get(
-        raw_setup,
-        ["Setup identificado. Detalhes completos no VIP.",
-         "Sinal ativo neste momento.",
-         "Entrada em zona de interesse.",
-         "Confluência técnica detectada."]
-    )
-
-    saas_link = "https://sideradogcripto.app"  # link do SaaS
-
-    lines = [
-        f"{BRAND_HEADER}  ·  *{setup_label}*",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"_{random.choice(free_openings)}_",
-        f"",
-        f"{dir_emoji} *{dir_label}*  `{pair}`  `{tf}`",
-        f"",
-        f"📍 *Zona de entrada:*  `{zone_lo} – {zone_hi}`",
-        f"🛑 Stop Loss  🔒  · 🎯 Alvos  🔒",
-        f"⚖️ R:R {rr_hint}  ·  Confiança: {conf_dots}",
-        f"",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"🔓 *Desbloqueie no PRO:*",
-        f"  → Stop exato, 3 alvos com % de fechamento",
-        f"  → Tabela de quanto entrar por banca",
-        f"  → Análise completa por IA",
-        f"  → Tracking automático de todos os sinais",
-        f"  → Chat com IA para tirar dúvidas",
-        f"",
-        f"💎 *R$ 120/mês* · [Assinar agora]({saas_link})",
-        f"🔗 [Abrir conta BloFin]({ref_link})" if ref_link else "",
-        f"",
-        f"🕐 _{now} UTC_ · {BRAND_TAG}",
-    ]
-
-    return "\n".join(l for l in lines if l is not None)
+# _format_free removido — FREE e VIP recebem o mesmo sinal completo.
+# Diferenciação de valor: /ask (VIP ilimitado vs 3/dia FREE), /mentor, timing.
 
 
 # ─── Update de trade (TP/SL hit) ──────────────────────────────────────────

@@ -28,6 +28,7 @@ from modules.scanner import scan_pairs
 from modules.tracker import TradeTracker
 from utils.blofin_api import BloFinAPI
 from utils.formatters import (
+    format_portfolio_header,
     format_signal_message,
     format_stats_message,
     format_trades_list,
@@ -737,6 +738,47 @@ class BloFinBot:
             logger.error(f"Erro ao gerar análise macro semanal: {e}")
 
     @staticmethod
+    def _select_hedge_portfolio(signals: list, target: int = 6) -> tuple[list, str]:
+        """Monta um portfolio com viés direcional + hedge parcial.
+
+        Retorna (sinais_selecionados, bias_string).
+
+        Lógica:
+          - Calcula o viés do mercado pela proporção de LONGs/SHORTs disponíveis
+          - bullish (>60% LONG)  → seleciona 4 LONG + 2 SHORT (ratio 2:1)
+          - bearish (>60% SHORT) → seleciona 2 LONG + 4 SHORT
+          - neutro               → seleciona 3 LONG + 3 SHORT
+          - Seleciona os de maior score em cada direção
+          - Se não há sinals suficientes em alguma direção, ajusta proporcional
+        """
+        longs  = sorted([s for s in signals if s.get("direction") == "LONG"],
+                        key=lambda s: s.get("score", 0), reverse=True)
+        shorts = sorted([s for s in signals if s.get("direction") == "SHORT"],
+                        key=lambda s: s.get("score", 0), reverse=True)
+        total  = len(longs) + len(shorts)
+        if total == 0:
+            return [], "neutro"
+
+        long_ratio = len(longs) / total
+        if long_ratio >= 0.60:
+            bias = "bullish"
+            n_l, n_s = min(4, len(longs)), min(2, len(shorts))
+        elif long_ratio <= 0.40:
+            bias = "bearish"
+            n_l, n_s = min(2, len(longs)), min(4, len(shorts))
+        else:
+            bias = "neutro"
+            half = target // 2
+            n_l, n_s = min(half, len(longs)), min(half, len(shorts))
+
+        selected = longs[:n_l] + shorts[:n_s]
+        for s in selected:
+            s["portfolio_bias"]    = bias
+            s["portfolio_n_longs"] = n_l
+            s["portfolio_n_shorts"] = n_s
+        return selected, bias
+
+    @staticmethod
     def _classify_setup(signal: dict, mode: str) -> str:
         """Classifica o setup como: scalp, swing, sniper, breakout, reversal, retest."""
         rr  = signal.get("rr_ratio", 0)
@@ -756,25 +798,37 @@ class BloFinBot:
         return "scalp"
 
     async def _scan_cycle(self, mission: dict = None, chat_id: str = None) -> int:
-        """Escaneia pares e envia sinais. mission = {bar, mode, max_signals}."""
+        """Escaneia pares e envia sinais. mission = {bar, mode, max_signals}.
+
+        Modos:
+          portfolio — seleciona 4+2 ou 2+4 com hedge e envia header do dia
+          swing     — seleciona melhores sinais do 4H, RR≥2.0
+          scalp     — seleciona sinais rápidos do 1H/15m
+        """
         pairs          = self.config.get("pairs", DEFAULT_PAIRS)
         min_confidence = self.config.get("min_confidence", 50)
 
         if mission:
-            bar        = mission.get("bar", "1H")
-            mode       = mission.get("mode", "scalp")
-            max_sigs   = mission.get("max_signals", 2)
+            bar      = mission.get("bar", "4H")
+            mode     = mission.get("mode", "swing")
+            max_sigs = mission.get("max_signals", 2)
         else:
-            bar      = self.config.get("timeframe", "1H")
-            mode     = "scalp"
+            bar      = "4H"
+            mode     = "swing"
             max_sigs = 2
 
-        min_rr = self.config.get("min_rr", 1.5)
-        max_rr = self.config.get("max_rr", 5.0)
-        if mode == "swing":
-            min_rr, max_rr = 2.0, 5.0
+        is_portfolio = (mode == "portfolio")
 
-        logger.info(f"Scan [{mode.upper()} {bar}] — {len(pairs)} pares, max {max_sigs} sinal(is)...")
+        # Portfolio usa 4H com critério mais largo para ter sinais suficientes
+        if is_portfolio:
+            bar, min_rr, max_rr = "4H", 1.8, 6.0
+        elif mode == "swing":
+            min_rr, max_rr = 2.0, 6.0
+        else:
+            min_rr = self.config.get("min_rr", 1.5)
+            max_rr = self.config.get("max_rr", 5.0)
+
+        logger.info(f"Scan [{mode.upper()} {bar}] — {len(pairs)} pares, max {max_sigs}...")
         signals = await scan_pairs(pairs, bar=bar)
 
         filtered = [
@@ -784,53 +838,80 @@ class BloFinBot:
             and s.get("confidence", 0) >= min_confidence
         ]
 
-        # Ordena por score e limita ao máximo da janela
-        filtered = sorted(filtered, key=lambda s: s.get("score", 0), reverse=True)[:max_sigs]
-        logger.info(f"{len(filtered)} sinal(is) selecionado(s) [{mode}]")
+        # Seleção de sinais
+        if is_portfolio:
+            # Hedge portfolio: viés direcional 4+2 ou 2+4
+            selected, bias = self._select_hedge_portfolio(filtered, target=6)
+        else:
+            selected = sorted(filtered, key=lambda s: s.get("score", 0), reverse=True)[:max_sigs]
+            bias = None
 
-        # Carrega stats de sizing uma vez por ciclo (mesmas condições para todos os sinais)
+        if not selected:
+            logger.info(f"Nenhum sinal válido [{mode} {bar}]")
+            return 0
+
+        logger.info(f"{len(selected)} sinal(is) selecionado(s) [{mode}]"
+                    + (f" — viés {bias}" if bias else ""))
+
+        # Carrega stats de sizing uma vez por ciclo
         try:
             sizing_stats = await self.db.get_sizing_stats(bankroll=self.bankroll)
         except Exception:
             sizing_stats = {}
 
-        for signal in filtered:
-            setup_type = self._classify_setup(signal, mode)
-            signal["trade_mode"]  = mode
-            signal["setup_type"]  = setup_type
+        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
+        if chat_id and chat_id not in targets:
+            targets.append(chat_id)
+        if not targets and self.vip_channel_id:
+            targets = [self.vip_channel_id]
+        if self.free_channel_id and self.free_channel_id not in targets:
+            targets.append(self.free_channel_id)
 
-            # Sizing dinâmico: varia 0.5% a 4.0% baseado em qualidade + streak + drawdown
-            risk_pct, sizing_reason = calculate_risk_pct(signal, sizing_stats)
-            signal["risk_pct"]    = risk_pct
-            signal["sizing_info"] = sizing_reason
-            signal["bankroll"]    = self.bankroll
+        # Portfolio: envia header primeiro
+        if is_portfolio and len(selected) >= 2:
+            # Calcula sizing antes para mostrar risco total no header
+            for s in selected:
+                risk_pct, sizing_reason = calculate_risk_pct(s, sizing_stats)
+                s["risk_pct"]    = risk_pct
+                s["sizing_info"] = sizing_reason
+            header_msg = format_portfolio_header(selected, bias, ref_link=self.ref_link)
+            for target in targets:
+                await self._send(header_msg, chat_id=target)
+            await asyncio.sleep(1)
 
-            if mode == "swing":
-                signal["swing_override_lev"] = 4
+        for signal in selected:
+            setup_type = self._classify_setup(signal, "swing" if is_portfolio else mode)
+            signal["trade_mode"] = "swing" if is_portfolio else mode
+            signal["setup_type"] = setup_type
 
-            trade = self.tracker.add_trade(signal)
+            # Sizing dinâmico (já calculado no portfolio, calcula agora para outros modos)
+            if not is_portfolio:
+                risk_pct, sizing_reason = calculate_risk_pct(signal, sizing_stats)
+                signal["risk_pct"]    = risk_pct
+                signal["sizing_info"] = sizing_reason
+            signal["bankroll"] = self.bankroll
+
+            trade      = self.tracker.add_trade(signal)
             await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
-            analysis  = await analyze_signal(signal, mode=mode)
-            chart_buf = create_chart(signal, self.config)
-            msg       = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link, mode=mode)
+            analysis   = await analyze_signal(signal, mode="swing" if is_portfolio else mode)
+            chart_buf  = create_chart(signal, self.config)
+            msg        = format_signal_message(signal, analysis=analysis,
+                                               ref_link=self.ref_link,
+                                               mode="swing" if is_portfolio else mode)
 
             logger.info(
                 f"[{setup_type.upper()}] {signal['pair']} {signal['direction']} "
-                f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')} bar={bar}"
+                f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')} "
+                f"risk={signal.get('risk_pct')}% bar={bar}"
             )
-
-            targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-            if chat_id and chat_id not in targets:
-                targets.append(chat_id)
-            if not targets and self.vip_channel_id:
-                targets = [self.vip_channel_id]
 
             for target in targets:
                 await self._send(msg, photo=chart_buf, chat_id=target)
 
             self._last_signal_at = datetime.now(timezone.utc)
+            await asyncio.sleep(2)  # pausa entre sinais do portfolio
 
-        return len(filtered)
+        return len(selected)
 
     async def _update_trades(self):
         """Verifica SL/TP nos trades ativos — uma chamada batch à API a cada 5 min.
@@ -889,23 +970,6 @@ class BloFinBot:
 
                 if event in ("SL_HIT", "TP3_HIT"):
                     self.tracker.remove_trade(pair)
-                    # Post teaser to FREE channel after trade closes
-                    if self.free_channel_id and self.free_channel_id != self.vip_channel_id:
-                        result_emoji = "✅" if trade_dict.get("pnl_usd", 0) > 0 else "❌"
-                        pnl_usd = trade_dict.get("pnl_usd", 0)
-                        direction = trade_dict.get("direction", "LONG")
-                        teaser = (
-                            f"{result_emoji} *Resultado do sinal VIP — {pair}*\n\n"
-                            f"Direção: `{direction}`\n"
-                            f"PNL: `{'+'if pnl_usd>=0 else ''}{pnl_usd:.2f} USD`\n\n"
-                            f"Quer pegar o próximo *antes de acontecer*?\n"
-                            f"👇 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}\n\n"
-                            f"⚠️ Não é recomendação de investimento."
-                        )
-                        try:
-                            await self._send(teaser, chat_id=self.free_channel_id)
-                        except Exception:
-                            pass
 
             except Exception as e:
                 logger.error(f"Erro verificando {pair}: {e}")
@@ -937,51 +1001,55 @@ class BloFinBot:
     def _schedule_daily_scans(self) -> list:
         """Gera missões de scan variando por dia da semana.
 
-        Retorna lista de dicts: {time, bar, mode, max_signals}
+        Estratégia: foco em swing/longo prazo (4H).
+        Portfolio matinal: 1 scan 4H de 6 sinais com hedge (bias direcional).
+        Complementares ao longo do dia: 1H swing + 1 sniper oportunístico.
+        Total: ~7 sinais por dia.
 
-        Segunda/Qua/Sex (dias ativos): 8-10 janelas, mix scalp+sniper
-        Terça/Quinta (swing days): 6-8 janelas, inclui 4H swing
-        Sábado/Domingo: 4-6 janelas, mais leve
+        Templates: (anchor_time, spread_min, bar, mode, max_signals)
         """
         today   = date.today()
         weekday = today.weekday()  # 0=Seg … 6=Dom
 
-        # (anchor_time, spread_min, bar, mode, max_signals)
-        if weekday in (5, 6):  # FDS — seletivo
+        if weekday in (5, 6):  # Fim de semana — portfolio mais leve
             templates = [
-                (time(9,  0), 20, "1H",  "scalp", 1),
-                (time(12, 0), 30, "4H",  "swing", 1),
-                (time(16, 0), 20, "1H",  "scalp", 1),
-                (time(20, 30), 25, "4H", "swing", 1),
+                (time(9, 30),  20, "4H", "portfolio", 4),   # portfolio 4 sinais sáb/dom
+                (time(15,  0), 25, "4H", "swing",     1),   # oportunidade tarde
+                (time(20,  0), 20, "1H", "swing",     1),   # sniper noturno
             ]
-            bonus_chance = 0.25
-        elif weekday in (1, 3):  # Ter/Qui — swing + scalp
+            bonus_chance = 0.20
+
+        elif weekday == 0:  # Segunda — portfolio de abertura de semana
             templates = [
-                (time(8,  45), 15, "1H",  "scalp", 1),
-                (time(10, 30), 20, "15m", "scalp", 1),
-                (time(13,  0), 20, "4H",  "swing", 1),
-                (time(15, 30), 15, "1H",  "scalp", 2),
-                (time(18,  0), 20, "4H",  "swing", 1),
-                (time(20, 30), 25, "1H",  "scalp", 1),
+                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio semanal completo
+                (time(13, 30), 20, "1H", "swing",     1),   # 1H tarde
+                (time(17,  0), 15, "4H", "swing",     1),   # 4H americano abre
+                (time(21,  0), 20, "1H", "swing",     1),   # noturno
+            ]
+            bonus_chance = 0.30
+
+        elif weekday in (1, 3):  # Terça/Quinta — dias de swing
+            templates = [
+                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
+                (time(14,  0), 20, "1H", "swing",     1),   # oportunidade tarde
+                (time(18, 30), 20, "4H", "swing",     1),   # 4H europeu fecha
+                (time(21, 30), 20, "1H", "swing",     1),   # noturno americano
+            ]
+            bonus_chance = 0.35
+
+        else:  # Quarta/Sexta — dias ativos
+            templates = [
+                (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
+                (time(12, 30), 20, "1H", "swing",     1),   # almoço Europa
+                (time(15, 30), 15, "4H", "swing",     1),   # abertura NY
+                (time(20,  0), 20, "1H", "swing",     2),   # noturno
             ]
             bonus_chance = 0.40
-        else:  # Seg/Qua/Sex — dias ativos, foco scalp
-            templates = [
-                (time(8,  30), 15, "15m", "scalp", 1),
-                (time(9,  15), 20, "1H",  "scalp", 2),
-                (time(11,  0), 15, "15m", "scalp", 1),
-                (time(13, 30), 20, "1H",  "scalp", 1),
-                (time(15, 30), 15, "1H",  "scalp", 2),
-                (time(17, 15), 20, "15m", "scalp", 1),
-                (time(19,  0), 20, "1H",  "scalp", 1),
-                (time(21,  0), 25, "4H",  "swing", 1),
-            ]
-            bonus_chance = 0.50
 
         missions = []
         for anchor_t, spread, bar, mode, max_sigs in templates:
             base   = datetime.combine(today, anchor_t)
-            offset = random.randint(-spread, spread)
+            offset = random.randint(-spread // 2, spread)  # assimétrico: não adianta muito
             missions.append({
                 "time":        base + timedelta(minutes=offset),
                 "bar":         bar,
@@ -989,14 +1057,14 @@ class BloFinBot:
                 "max_signals": max_sigs,
             })
 
-        # Scan bônus surpresa
+        # Scan sniper bônus (alta probabilidade, qualquer hora)
         if random.random() < bonus_chance:
-            bonus_h = random.randint(10, 20)
+            bonus_h = random.randint(10, 21)
             bonus_m = random.randint(0, 59)
             missions.append({
                 "time":        datetime.combine(today, time(bonus_h, bonus_m)),
-                "bar":         random.choice(["1H", "4H"]),
-                "mode":        random.choice(["scalp", "swing"]),
+                "bar":         "4H",
+                "mode":        "swing",
                 "max_signals": 1,
             })
 
@@ -1004,9 +1072,9 @@ class BloFinBot:
         self._today_schedule = [m["time"] for m in missions]
 
         logger.info(
-            f"Agenda [{['Seg','Ter','Qua','Qui','Sex','Sab','Dom'][weekday]}] "
+            f"Agenda [{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'][weekday]}] "
             f"{len(missions)} missões: "
-            + ", ".join(f"{m['time'].strftime('%H:%M')}[{m['bar']}]" for m in missions)
+            + ", ".join(f"{m['time'].strftime('%H:%M')}[{m['bar']}/{m['mode']}]" for m in missions)
         )
         return missions
 

@@ -22,7 +22,7 @@ async def scan_pairs(pairs: list, bar: str = "1H", limit: int = 200, delay: floa
                 df = candles_to_df(candles)
                 df = add_all_indicators(df)
                 scalp = bar in ("1m", "3m", "5m", "15m", "30m")
-                signal = detect_signal(df, scalp=scalp)
+                signal = detect_signal(df, scalp=scalp, bar=bar)
                 if signal:
                     # Validate entry is close to current market price
                     try:

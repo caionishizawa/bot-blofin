@@ -134,7 +134,7 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
+def detect_signal(df: pd.DataFrame, scalp: bool = False, bar: str = "1H") -> dict | None:
     """Detect trading signal based on confluence of indicators.
 
     Requires minimum 3 confluences to generate a signal.
@@ -222,11 +222,21 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False) -> dict | None:
     entry = float(last["close"])
     atr = float(last["atr"])
 
-    # Scalp: tighter levels for 15m; swing: wider for 1H+
+    # TP/SL multipliers por tier de timeframe
+    # TP1 = parcial de proteção (breakeven trigger)
+    # TP2 = alvo principal de lucro
+    # TP3 = runner (deixa rodar)
+    bar_upper = bar.upper() if bar else "1H"
     if scalp:
-        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.0, 1.0, 1.8, 2.8
+        # 15m/30m — scalp rápido: stop curto, alvos definidos
+        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.0, 0.8, 1.5, 2.5
+    elif bar_upper in ("4H", "1D", "3D", "1W"):
+        # 4H/1D — swing/longo prazo: stop espaçado, alvos estendidos
+        # SL: 2 ATR | TP1: 1 ATR (20%) | TP2: 4 ATR (50%) | TP3: 8 ATR (30%)
+        sl_mult, tp1_mult, tp2_mult, tp3_mult = 2.0, 1.0, 4.0, 8.0
     else:
-        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.5, 1.5, 2.5, 4.0
+        # 1H/2H — intraday: intermediário
+        sl_mult, tp1_mult, tp2_mult, tp3_mult = 1.5, 1.2, 2.5, 4.5
 
     if direction == "LONG":
         stop_loss = entry - (atr * sl_mult)
