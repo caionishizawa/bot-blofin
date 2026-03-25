@@ -27,10 +27,12 @@ SETUP_META = {
 
 # BloFin fee
 BLOFIN_TAKER_FEE = 0.0006
-TP_SIZING = {"tp1": 20, "tp2": 50, "tp3": 30}
-# TP1 = 20%: parcial rápido + mover SL para breakeven
-# TP2 = 50%: realização principal
-# TP3 = 30%: runner — deixa o trade trabalhar
+# TP splits por tp_count (% de saída em cada alvo)
+TP_SIZING = {
+    1: {"tp1": 100},                       # scalp: tudo no TP1
+    2: {"tp1": 40, "tp2": 60},             # sniper/intraday: 40% + 60%
+    3: {"tp1": 35, "tp2": 45, "tp3": 20},  # swing: 35% + 45% + 20% runner
+}
 
 # ─── Personalidades ────────────────────────────────────────────────────────
 # 5 vozes que rotacionam. Cada uma tem frases de abertura por contexto.
@@ -316,7 +318,7 @@ def format_portfolio_header(signals: list, bias: str, ref_link: str = "") -> str
 
 
 def _pos_table(entry: float, sl: float, direction: str, risk_pct: float = 1.5,
-               sizing_info: str = "") -> str:
+               sizing_info: str = "", tp_count: int = 3) -> str:
     """Tabela de tamanho de posição com risco dinâmico do position sizer."""
     if not entry or not sl or entry == sl:
         return ""
@@ -332,7 +334,14 @@ def _pos_table(entry: float, sl: float, direction: str, risk_pct: float = 1.5,
         b_str   = f"${b:,.0f}".replace(",", ".")
         pos_str = f"${pos:,.0f}".replace(",", ".")
         lines.append(f"  `{b_str:<8}` → posição `{pos_str}`  _(risco ${risk})_")
-    lines.append("_20% no A1 (+ move SL) · 50% no A2 · 30% no A3 (runner)_")
+    # Saída splits
+    splits = TP_SIZING.get(tp_count, TP_SIZING[3])
+    if tp_count == 1:
+        lines.append("_100% no A1 — saída total (scalp)_")
+    elif tp_count == 2:
+        lines.append(f"_{splits['tp1']}% no A1 (+ mover SL) · {splits['tp2']}% no A2 (final)_")
+    else:
+        lines.append(f"_{splits['tp1']}% no A1 (+ mover SL) · {splits['tp2']}% no A2 · {splits['tp3']}% no A3 (runner)_")
     if sizing_info:
         lines.append(f"_🧮 {sizing_info}_")
     return "\n".join(lines)
@@ -353,13 +362,18 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
     dir_emoji = "🟢" if direction == "LONG" else "🔴"
     dir_label = "LONG  ↑" if direction == "LONG" else "SHORT  ↓"
 
-    sl_dist = abs(entry - sl)
+    sl_dist  = abs(entry - sl)
+    tp_count = int(signal.get("tp_count", 3))
+    splits   = TP_SIZING.get(tp_count, TP_SIZING[3])
     rr = signal.get("rr_ratio", 0)
-    if sl_dist > 0 and tp1 and tp2 and tp3:
+    if sl_dist > 0 and tp1:
+        s1 = splits.get("tp1", 35) / 100
+        s2 = splits.get("tp2", 45) / 100 if tp2 else 0
+        s3 = splits.get("tp3", 20) / 100 if tp3 else 0
         rr = round(
-            abs(tp1 - entry) / sl_dist * 0.50 +
-            abs(tp2 - entry) / sl_dist * 0.30 +
-            abs(tp3 - entry) / sl_dist * 0.20, 2
+            abs(tp1 - entry) / sl_dist * s1 +
+            (abs(tp2 - entry) / sl_dist * s2 if tp2 else 0) +
+            (abs(tp3 - entry) / sl_dist * s3 if tp3 else 0), 2
         )
 
     # Variação % de cada nível em relação à entrada
@@ -374,9 +388,29 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
     rr_label    = _rr_label(rr)
     now         = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
     footer      = _context_footer(recent_wins, recent_losses)
+    tp_count    = int(signal.get("tp_count", 3))
     risk_pct    = float(signal.get("risk_pct", 1.5))
     sizing_info = signal.get("sizing_info", "")
-    pos_table   = _pos_table(entry, sl, direction, risk_pct=risk_pct, sizing_info=sizing_info)
+    splits      = TP_SIZING.get(tp_count, TP_SIZING[3])
+    pos_table   = _pos_table(entry, sl, direction, risk_pct=risk_pct, sizing_info=sizing_info, tp_count=tp_count)
+
+    # Build TP lines based on structure
+    tp_lines = [
+        f"──────────────────────────",
+        f"🎯 *Alvo 1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_",
+    ]
+    if tp_count == 1:
+        tp_lines[-1] += f"  · fechar *100%* (scalp)"
+    elif tp_count == 2:
+        tp_lines[-1] += f"  · {splits['tp1']}% + mover SL → breakeven"
+        if tp2:
+            tp_lines.append(f"🏆 *Alvo 2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar *{splits['tp2']}%* (final)")
+    else:
+        tp_lines[-1] += f"  · {splits['tp1']}% + mover SL → breakeven"
+        if tp2:
+            tp_lines.append(f"🎯 *Alvo 2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar *{splits['tp2']}%*")
+        if tp3:
+            tp_lines.append(f"🏆 *Alvo 3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · runner *{splits['tp3']}%*")
 
     lines = [
         f"{BRAND_HEADER}  ·  *{setup_label}*",
@@ -387,12 +421,9 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
         f"_{setup_sub}_",
         f"",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📍 *Entrada*      `{_fmt_price(entry)}`",
-        f"🛑 *Stop Loss*   `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
-        f"──────────────────────────",
-        f"🎯 *Alvo 1*       `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_  · 20% + mover SL → breakeven",
-        f"🎯 *Alvo 2*       `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar 50%",
-        f"🏆 *Alvo 3*       `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · deixar rodar 30%",
+        f"📍 *Entrada*     `{_fmt_price(entry)}`",
+        f"🛑 *Stop Loss*  `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
+        *tp_lines,
         f"",
         f"⚖️ R:R `{rr}:1` — {rr_label}  ·  📊 Conf: {conf_bar} {confidence}%",
         f"🕐 _{now}_",
@@ -433,14 +464,38 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
 # ─── Update de trade (TP/SL hit) ──────────────────────────────────────────
 
 def format_update_message(pair: str, event: str, trade: dict, bankroll: float = 1000.0) -> str:
-    _close_pct = {"TP1_HIT": 50, "TP2_HIT": 30, "TP3_HIT": 20, "SL_HIT": 100}
-    _remaining = {"TP1_HIT": 50, "TP2_HIT": 20, "TP3_HIT": 0,  "SL_HIT": 0}
+    tc = int(trade.get("tp_count", 3))
+    splits = TP_SIZING.get(tc, TP_SIZING[3])
+
+    # Determine % closed now and remaining based on event + tp_count
+    if event == "TP1_HIT":
+        if tc == 1:
+            closed_now, remaining = 100, 0
+        else:
+            closed_now = splits.get("tp1", 35)
+            remaining  = 100 - closed_now
+    elif event == "TP2_HIT":
+        if tc == 2:
+            closed_now, remaining = splits.get("tp2", 60), 0
+        else:
+            closed_now = splits.get("tp2", 45)
+            remaining  = splits.get("tp3", 20)
+    elif event == "TP3_HIT":
+        closed_now, remaining = splits.get("tp3", 20), 0
+    else:  # SL_HIT
+        closed_now, remaining = 100, 0
+
+    is_final = remaining == 0
+
+    # Determine if this is the final TP close
+    final_tp_events = {1: "TP1_HIT", 2: "TP2_HIT", 3: "TP3_HIT"}
+    is_final_tp = (event != "SL_HIT") and (event == final_tp_events.get(tc, "TP3_HIT"))
 
     event_configs = {
-        "TP1_HIT": ("🎯", "ALVO 1 ATINGIDO"),
-        "TP2_HIT": ("🎯🎯", "ALVO 2 ATINGIDO"),
-        "TP3_HIT": ("🏆", "ALVO FINAL — POSIÇÃO ENCERRADA"),
-        "SL_HIT":  ("🛑", "STOP ATIVADO — POSIÇÃO ENCERRADA"),
+        "TP1_HIT": ("🎯",   "ALVO 1 ATINGIDO" + (" — POSIÇÃO ENCERRADA" if tc == 1 else "")),
+        "TP2_HIT": ("🎯🎯", "ALVO 2 ATINGIDO" + (" — POSIÇÃO ENCERRADA" if tc == 2 else "")),
+        "TP3_HIT": ("🏆",   "ALVO FINAL — POSIÇÃO ENCERRADA"),
+        "SL_HIT":  ("🛑",   "STOP ATIVADO — POSIÇÃO ENCERRADA"),
     }
     emoji, label = event_configs.get(event, ("📢", event))
 
@@ -450,8 +505,6 @@ def format_update_message(pair: str, event: str, trade: dict, bankroll: float = 
     direction  = trade.get("direction", "LONG")
     opened_at  = trade.get("opened_at", "")
     rr         = trade.get("rr_ratio", 0)
-    remaining  = _remaining.get(event, 0)
-    closed_now = _close_pct.get(event, 100)
 
     from modules.performance import PerformanceDB
     pnl_usd       = PerformanceDB.calc_pnl_usd(trade, bankroll)
@@ -462,32 +515,45 @@ def format_update_message(pair: str, event: str, trade: dict, bankroll: float = 
     pct_str   = f"+{pnl_banca_pct:.2f}%" if pnl_banca_pct >= 0 else f"{pnl_banca_pct:.2f}%"
     move_str  = f"+{pnl:.3f}%"           if pnl >= 0           else f"{pnl:.3f}%"
 
-    # Frase contextual por evento
-    tp_phrases = {
-        "TP1_HIT": [
-            "✅ Primeiro alvo batido! Metade do lucro já garantido na conta.",
-            "✅ TP1 atingido. Lucro parcial realizado — posição ainda aberta para mais.",
-            "✅ Chegou no primeiro alvo. Já tá no verde, agora aguarda o próximo.",
-            "✅ Parcial realizado. Quem entrou já está lucrando.",
-        ],
-        "TP2_HIT": [
-            "✅✅ Segundo alvo batido! 80% da posição já fechada no lucro.",
-            "✅✅ TP2 confirmado. Quase no alvo máximo.",
-            "✅✅ Dois alvos batidos. Trade operando muito bem.",
-        ],
-        "TP3_HIT": [
-            "🏆 TRADE COMPLETO! Todos os alvos batidos.",
-            "🏆 Alvo máximo atingido. Trade fechado com resultado cheio.",
-            "🏆 Três alvos, três acertos. Esse é o método.",
-            "🏆 Missão cumprida. Posição encerrada no topo.",
-        ],
-        "SL_HIT": [
-            "O stop foi ativado. Risco controlado, banca protegida — é assim que se gerencia.",
-            "Stop executado. Perda limitada ao planejado. Próximo setup já em análise.",
-            "Proteção ativada. Quem gerencia o risco, sobrevive no mercado.",
-        ],
-    }
-    phrase = random.choice(tp_phrases.get(event, ["Evento registrado."]))
+    # Frase contextual por evento (tp_count-aware)
+    if event == "TP1_HIT" and tc == 1:
+        phrase = random.choice([
+            "✅ SCALP COMPLETO! Alvo atingido, posição encerrada.",
+            "✅ TP1 — saída total realizada. Scalp executado com precisão.",
+            "✅ Alvo batido. Saiu 100%, banca atualizada.",
+        ])
+    elif event == "TP2_HIT" and tc == 2:
+        phrase = random.choice([
+            "🏆 TRADE ENCERRADO! TP2 batido — posição fechada no lucro.",
+            "🏆 Segundo alvo atingido. Saída total realizada.",
+            "🏆 TP2 confirmado. Trade fechado com resultado.",
+        ])
+    else:
+        tp_phrases = {
+            "TP1_HIT": [
+                "✅ Primeiro alvo batido! Parcial realizado — posição ainda aberta.",
+                "✅ TP1 atingido. Lucro parcial garantido, mover SL para breakeven.",
+                "✅ Chegou no primeiro alvo. Já tá no verde, aguarda o próximo.",
+                "✅ Parcial realizado. Quem entrou já está lucrando.",
+            ],
+            "TP2_HIT": [
+                "✅✅ Segundo alvo batido! Posição parcialmente fechada no lucro.",
+                "✅✅ TP2 confirmado. Runner ainda aberto para o TP3.",
+                "✅✅ Dois alvos batidos. Trade operando muito bem.",
+            ],
+            "TP3_HIT": [
+                "🏆 TRADE COMPLETO! Todos os alvos batidos.",
+                "🏆 Alvo máximo atingido. Trade fechado com resultado cheio.",
+                "🏆 Três alvos, três acertos. Esse é o método.",
+                "🏆 Missão cumprida. Posição encerrada no topo.",
+            ],
+            "SL_HIT": [
+                "O stop foi ativado. Risco controlado, banca protegida — é assim que se gerencia.",
+                "Stop executado. Perda limitada ao planejado. Próximo setup já em análise.",
+                "Proteção ativada. Quem gerencia o risco, sobrevive no mercado.",
+            ],
+        }
+        phrase = random.choice(tp_phrases.get(event, ["Evento registrado."]))
 
     lines = [
         f"{BRAND_HEADER}",

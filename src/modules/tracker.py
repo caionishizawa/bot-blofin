@@ -1,5 +1,10 @@
 """
 Trade Tracker — monitors active trades and detects SL/TP level hits.
+
+tp_count controls the TP structure:
+  1 — scalp: close 100% at TP1
+  2 — sniper/intraday: 40% at TP1, 60% at TP2 (final)
+  3 — swing: 35% at TP1, 45% at TP2, 20% at TP3 (final)
 """
 
 import uuid
@@ -14,6 +19,13 @@ class TradeStatus(Enum):
     TP3_HIT = "tp3_hit"
     SL_HIT  = "sl_hit"
 
+
+# Exit splits per tp_count: (tp1_split, tp2_split, tp3_split)
+_TP_SPLITS = {
+    1: (1.00, 0.00, 0.00),
+    2: (0.40, 0.60, 0.00),
+    3: (0.35, 0.45, 0.20),
+}
 
 # PnL mapping: what % of the move is realized at each event
 _TP_EXIT_PRICE_KEY = {
@@ -34,14 +46,16 @@ class ActiveTrade:
         self.entry     = float(signal["entry"])
         self.stop_loss = float(signal["stop_loss"])
         self.tp1       = float(signal["tp1"])
-        self.tp2       = float(signal["tp2"])
-        self.tp3       = float(signal["tp3"])
+        self.tp2       = float(signal.get("tp2") or 0)
+        self.tp3       = float(signal.get("tp3") or 0)
+        self.tp_count  = int(signal.get("tp_count", 3))
         self.risk_pct  = float(signal.get("risk_pct", 2.0))
         self.rr_ratio  = float(signal.get("rr_ratio", 0.0))
         self.confidence = int(signal.get("confidence", 0))
         self.score     = float(signal.get("score", 0.0))
         self.reasons   = signal.get("reasons", [])
         self.timeframe = signal.get("timeframe", "1H")
+        self.trade_style = signal.get("trade_style", "swing")
 
         self.status        = TradeStatus.OPEN
         self.current_price = self.entry
@@ -55,6 +69,11 @@ class ActiveTrade:
         self.sl_hit  = False
 
     @property
+    def final_tp(self) -> str:
+        """Event string that signals the final close for this trade's tp_count."""
+        return {1: "TP1_HIT", 2: "TP2_HIT", 3: "TP3_HIT"}.get(self.tp_count, "TP3_HIT")
+
+    @property
     def pnl_pct(self) -> float:
         """Current unrealized PNL % based on current_price."""
         ref = self.exit_price if self.exit_price is not None else self.current_price
@@ -66,8 +85,7 @@ class ActiveTrade:
     def unrealized_pnl_usd(self, bankroll: float) -> float:
         """PNL não realizado da posição ainda aberta, em USD.
 
-        Considera o sizing parcial (TP1=50%, TP2=30%, TP3=20%):
-        após TP1, só 50% da posição segue aberta; após TP2, só 20%.
+        Usa splits do tp_count: {1: 100%, 2: 40/60, 3: 35/45/20}.
         """
         sl_dist = abs(self.entry - self.stop_loss)
         if sl_dist == 0 or self.entry == 0:
@@ -75,9 +93,9 @@ class ActiveTrade:
 
         risk_amount = bankroll * self.risk_pct / 100
 
-        # % da posição ainda aberta
-        remaining = 1.0 - (0.50 if self.tp1_hit else 0.0) - (0.30 if self.tp2_hit else 0.0)
-        if remaining <= 0 or self.sl_hit or self.tp3_hit:
+        s1, s2, s3 = _TP_SPLITS.get(self.tp_count, _TP_SPLITS[3])
+        remaining = 1.0 - (s1 if self.tp1_hit else 0.0) - (s2 if self.tp2_hit else 0.0) - (s3 if self.tp3_hit else 0.0)
+        if remaining <= 0 or self.sl_hit or (self.tp_count == 1 and self.tp1_hit) or (self.tp_count == 2 and self.tp2_hit) or self.tp3_hit:
             return 0.0
 
         if self.direction == "LONG":
@@ -96,9 +114,14 @@ class ActiveTrade:
     def check_levels(self, price: float) -> str | None:
         """Check if price has hit any SL/TP level.
 
-        Returns event string or None. On hit, records exit_price and closed_at.
+        Returns event string or None. On final TP hit, records exit_price and closed_at.
+        tp_count controls which TPs are active:
+          1 → only TP1 checked (close 100%)
+          2 → TP1 (partial 40%) + TP2 (final close 60%)
+          3 → TP1 (35%) + TP2 (45%) + TP3 (final close 20%)
         """
         self.current_price = price
+        tc = self.tp_count
 
         if self.direction == "LONG":
             if not self.sl_hit and price <= self.stop_loss:
@@ -106,22 +129,30 @@ class ActiveTrade:
                 self.status = TradeStatus.SL_HIT
                 self._close(self.stop_loss)
                 return "SL_HIT"
-            if not self.tp3_hit and price >= self.tp3:
-                self.tp1_hit = True  # garante parciais marcadas mesmo em gap
+            # TP3 — only for 3-TP trades
+            if tc == 3 and not self.tp3_hit and self.tp3 > 0 and price >= self.tp3:
+                self.tp1_hit = True
                 self.tp2_hit = True
                 self.tp3_hit = True
                 self.status = TradeStatus.TP3_HIT
                 self._close(self.tp3)
                 return "TP3_HIT"
-            if not self.tp2_hit and price >= self.tp2:
+            # TP2 — for 2-TP (final) and 3-TP (partial)
+            if tc >= 2 and not self.tp2_hit and self.tp2 > 0 and price >= self.tp2:
                 self.tp2_hit = True
                 self.status = TradeStatus.TP2_HIT
-                # Partial close — trade stays open (remaining 20%)
+                if tc == 2:
+                    self.tp1_hit = True  # mark partial also done on gap
+                    self._close(self.tp2)
                 return "TP2_HIT"
-            if not self.tp1_hit and price >= self.tp1:
+            # TP1
+            if not self.tp1_hit and self.tp1 > 0 and price >= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
-                # Partial close — trade stays open (remaining 50%)
+                if tc == 1:
+                    self.tp2_hit = True
+                    self.tp3_hit = True
+                    self._close(self.tp1)
                 return "TP1_HIT"
         else:  # SHORT
             if not self.sl_hit and price >= self.stop_loss:
@@ -129,22 +160,27 @@ class ActiveTrade:
                 self.status = TradeStatus.SL_HIT
                 self._close(self.stop_loss)
                 return "SL_HIT"
-            if not self.tp3_hit and price <= self.tp3:
-                self.tp1_hit = True  # garante parciais marcadas mesmo em gap
+            if tc == 3 and not self.tp3_hit and self.tp3 > 0 and price <= self.tp3:
+                self.tp1_hit = True
                 self.tp2_hit = True
                 self.tp3_hit = True
                 self.status = TradeStatus.TP3_HIT
                 self._close(self.tp3)
                 return "TP3_HIT"
-            if not self.tp2_hit and price <= self.tp2:
+            if tc >= 2 and not self.tp2_hit and self.tp2 > 0 and price <= self.tp2:
                 self.tp2_hit = True
                 self.status = TradeStatus.TP2_HIT
-                # Partial close — trade stays open (remaining 20%)
+                if tc == 2:
+                    self.tp1_hit = True
+                    self._close(self.tp2)
                 return "TP2_HIT"
-            if not self.tp1_hit and price <= self.tp1:
+            if not self.tp1_hit and self.tp1 > 0 and price <= self.tp1:
                 self.tp1_hit = True
                 self.status = TradeStatus.TP1_HIT
-                # Partial close — trade stays open (remaining 50%)
+                if tc == 1:
+                    self.tp2_hit = True
+                    self.tp3_hit = True
+                    self._close(self.tp1)
                 return "TP1_HIT"
 
         return None
@@ -158,14 +194,16 @@ class ActiveTrade:
             "entry":         self.entry,
             "stop_loss":     self.stop_loss,
             "tp1":           self.tp1,
-            "tp2":           self.tp2,
-            "tp3":           self.tp3,
+            "tp2":           self.tp2 or None,
+            "tp3":           self.tp3 or None,
+            "tp_count":      self.tp_count,
             "risk_pct":      self.risk_pct,
             "rr_ratio":      self.rr_ratio,
             "confidence":    self.confidence,
             "score":         self.score,
             "reasons":       self.reasons,
             "timeframe":     self.timeframe,
+            "trade_style":   self.trade_style,
             "status":        self.status.value,
             "current_price": self.current_price,
             "exit_price":    self.exit_price,

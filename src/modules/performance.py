@@ -55,6 +55,8 @@ class _PGBackend:
                     tp2_hit     BOOLEAN DEFAULT FALSE,
                     tp3_hit     BOOLEAN DEFAULT FALSE,
                     sl_hit      BOOLEAN DEFAULT FALSE,
+                    tp_count    INTEGER DEFAULT 3,
+                    trade_style TEXT DEFAULT 'swing',
                     opened_at   TEXT NOT NULL,
                     closed_at   TEXT
                 )
@@ -167,6 +169,8 @@ class _SQLiteBackend:
                 tp2_hit     INTEGER DEFAULT 0,
                 tp3_hit     INTEGER DEFAULT 0,
                 sl_hit      INTEGER DEFAULT 0,
+                tp_count    INTEGER DEFAULT 3,
+                trade_style TEXT DEFAULT 'swing',
                 opened_at   TEXT NOT NULL,
                 closed_at   TEXT
             )
@@ -206,12 +210,14 @@ class _SQLiteBackend:
             )
         """)
         for col, definition in [
-            ("rr_ratio", "REAL DEFAULT 0.0"),
-            ("pnl_usd",  "REAL DEFAULT 0.0"),
-            ("tp1_hit",  "INTEGER DEFAULT 0"),
-            ("tp2_hit",  "INTEGER DEFAULT 0"),
-            ("tp3_hit",  "INTEGER DEFAULT 0"),
-            ("sl_hit",   "INTEGER DEFAULT 0"),
+            ("rr_ratio",    "REAL DEFAULT 0.0"),
+            ("pnl_usd",     "REAL DEFAULT 0.0"),
+            ("tp1_hit",     "INTEGER DEFAULT 0"),
+            ("tp2_hit",     "INTEGER DEFAULT 0"),
+            ("tp3_hit",     "INTEGER DEFAULT 0"),
+            ("sl_hit",      "INTEGER DEFAULT 0"),
+            ("tp_count",    "INTEGER DEFAULT 3"),
+            ("trade_style", "TEXT DEFAULT 'swing'"),
         ]:
             try:
                 await self._db.execute(f"ALTER TABLE trades ADD COLUMN {col} {definition}")
@@ -292,15 +298,19 @@ class PerformanceDB:
     # PNL calculation
     # ------------------------------------------------------------------
 
+    # Exit splits per tp_count (must mirror tracker._TP_SPLITS)
+    _TP_SPLITS = {1: (1.00, 0.00, 0.00), 2: (0.40, 0.60, 0.00), 3: (0.35, 0.45, 0.20)}
+
     @staticmethod
     def calc_pnl_usd(trade: dict, bankroll: float) -> float:
         risk_pct    = trade.get("risk_pct", 2.0)
         risk_amount = bankroll * risk_pct / 100
         entry       = trade.get("entry", 0)
         stop_loss   = trade.get("stop_loss", 0)
-        tp1         = trade.get("tp1", 0)
-        tp2         = trade.get("tp2", 0)
-        tp3         = trade.get("tp3", 0)
+        tp1         = trade.get("tp1") or 0
+        tp2         = trade.get("tp2") or 0
+        tp3         = trade.get("tp3") or 0
+        tp_count    = int(trade.get("tp_count", 3))
 
         if not entry or not stop_loss:
             return 0.0
@@ -313,15 +323,17 @@ class PerformanceDB:
         tp3_hit = bool(trade.get("tp3_hit", False))
         sl_hit  = bool(trade.get("sl_hit",  False))
 
+        s1, s2, s3 = PerformanceDB._TP_SPLITS.get(tp_count, (0.35, 0.45, 0.20))
+
         pnl = 0.0
         if tp1_hit and tp1:
-            pnl += risk_amount * (abs(tp1 - entry) / sl_dist) * 0.50
+            pnl += risk_amount * (abs(tp1 - entry) / sl_dist) * s1
         if tp2_hit and tp2:
-            pnl += risk_amount * (abs(tp2 - entry) / sl_dist) * 0.30
+            pnl += risk_amount * (abs(tp2 - entry) / sl_dist) * s2
         if tp3_hit and tp3:
-            pnl += risk_amount * (abs(tp3 - entry) / sl_dist) * 0.20
+            pnl += risk_amount * (abs(tp3 - entry) / sl_dist) * s3
         if sl_hit:
-            remaining = 1.0 - (0.50 if tp1_hit else 0) - (0.30 if tp2_hit else 0)
+            remaining = 1.0 - (s1 if tp1_hit else 0) - (s2 if tp2_hit else 0)
             pnl -= risk_amount * remaining
 
         return round(pnl, 2)
@@ -344,8 +356,9 @@ class PerformanceDB:
              risk_pct, rr_ratio, confidence, score, reasons,
              status, exit_price, pnl_pct, pnl_usd,
              tp1_hit, tp2_hit, tp3_hit, sl_hit,
+             tp_count, trade_style,
              opened_at, closed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade_id,
             trade["pair"],
@@ -368,6 +381,8 @@ class PerformanceDB:
             bool(trade.get("tp2_hit", False)),
             bool(trade.get("tp3_hit", False)),
             bool(trade.get("sl_hit",  False)),
+            int(trade.get("tp_count", 3)),
+            trade.get("trade_style", "swing"),
             trade.get("opened_at", datetime.now(timezone.utc).isoformat()),
             trade.get("closed_at"),
         ))
@@ -495,6 +510,36 @@ class PerformanceDB:
             "win_rate_recent":  win_rate,      # win rate últimos 20 trades
             "total_closed":     len(pnl_list),
         }
+
+    async def get_stats_by_style(self, days: int = 30, bankroll: float = 1000.0) -> dict:
+        """Performance breakdown por estilo: scalp / daytrade / swing."""
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = await self._backend.fetchall(
+            """SELECT pnl_usd, trade_style
+               FROM trades
+               WHERE opened_at >= ? AND closed_at IS NOT NULL""",
+            (since,),
+        )
+        styles = {"scalp": [], "daytrade": [], "swing": []}
+        for r in rows:
+            style = r.get("trade_style") or "swing"
+            if style not in styles:
+                style = "swing"
+            styles[style].append(r["pnl_usd"] or 0.0)
+
+        result = {}
+        for style, pnl_list in styles.items():
+            if not pnl_list:
+                result[style] = {"trades": 0, "win_rate": 0.0, "total_pnl_usd": 0.0, "avg_pnl_usd": 0.0}
+                continue
+            wins = sum(1 for p in pnl_list if p > 0)
+            result[style] = {
+                "trades":        len(pnl_list),
+                "win_rate":      round(wins / len(pnl_list) * 100, 1),
+                "total_pnl_usd": round(sum(pnl_list), 2),
+                "avg_pnl_usd":   round(sum(pnl_list) / len(pnl_list), 2),
+            }
+        return result
 
     async def get_bankroll_history(self, bankroll: float = 1000.0, limit: int = 50) -> list:
         rows = await self._backend.fetchall(

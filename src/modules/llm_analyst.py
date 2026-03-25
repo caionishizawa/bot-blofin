@@ -54,14 +54,33 @@ Escreva EXATAMENTE 5 linhas em primeira pessoa:
 """
 
 
-# ─── Macro weekly prompt ────────────────────────────────────────────────────
-MACRO_PROMPT = """Você é o sideradog — analista e trader do canal sideradogcripto. É segunda-feira e você vai abrir a semana com sua leitura macro do mercado cripto. Tom pessoal, direto, confiante. Português. Sem markdown, sem asterisco, sem listas numeradas.
+# ─── Daytrade prompt — intraday 1H/2H, objetivo claro, sem noise ────────────
+DAYTRADE_PROMPT = """Você é analista sênior do sideradogcripto. Análise intraday — foco em execução no mesmo dia. Tom técnico, direto. Português. Sem markdown, sem asterisco.
 
-CONTEXTO DE MERCADO — SEMANA {week}
+SETUP INTRADAY — {pair} {direction} {timeframe}
+Entrada: {entry} | Stop: {stop_loss} | R:R {rr_ratio}:1
+A1: {tp1} | A2: {tp2}
+RSI: {rsi:.0f} | ADX: {adx:.0f} | Conf: {confidence}%
+Zonas: S {support:.4f} / R {resistance:.4f}
+Confluências: {reasons}
+
+Escreva EXATAMENTE 4 linhas diretas:
+1. Contexto intraday — onde o preço está e o que mostra no 1H
+2. Confluências ativas e o que validam para essa entrada
+3. Gestão do trade — onde está o SL, quando mover para breakeven (TP1)
+4. Decisão final e contexto de saída no TP2
+"""
+
+
+# ─── Macro weekly prompt ────────────────────────────────────────────────────
+MACRO_PROMPT = """Você é o sideradog — analista e trader do canal sideradogcripto. É {weekday} e você vai compartilhar sua leitura macro do mercado cripto. Tom pessoal, direto, confiante. Português. Sem markdown, sem asterisco, sem listas numeradas.
+
+CONTEXTO DE MERCADO — {week}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 BTC: preço {btc_price} | RSI {btc_rsi:.0f} | tendência {btc_trend} | var 7d {btc_change:+.1f}%
 ETH: preço {eth_price} | RSI {eth_rsi:.0f} | tendência {eth_trend} | var 7d {eth_change:+.1f}%
 SOL: preço {sol_price} | RSI {sol_rsi:.0f} | tendência {sol_trend}
+Fear & Greed Index: {fear_greed_value}/100 — {fear_greed_label} (ontem: {fear_greed_yesterday})
 Dominância BTC estimada: {btc_dominance}
 Pares em tendência de alta: {bullish_count}/{total_pairs}
 Pares em tendência de baixa: {bearish_count}/{total_pairs}
@@ -75,6 +94,26 @@ Escreva exatamente 6 frases separadas por linha. Sem prefixos, sem numeração, 
 - O que foco essa semana: setups e pares
 - Fecho curto e confiante — uma frase, sem exagero
 """
+
+
+async def fetch_fear_greed() -> dict:
+    """Fetches Fear & Greed Index from alternative.me (free, no auth needed)."""
+    import aiohttp
+    try:
+        url = "https://api.alternative.me/fng/?limit=2"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                data = await resp.json(content_type=None)
+                items = data.get("data", [{}])
+                now = items[0] if items else {}
+                yesterday = items[1] if len(items) > 1 else {}
+                return {
+                    "value":     int(now.get("value", 50)),
+                    "label":     now.get("value_classification", "Neutral"),
+                    "yesterday": int(yesterday.get("value", 50)),
+                }
+    except Exception:
+        return {"value": 50, "label": "Neutral", "yesterday": 50}
 
 
 def _extract_context(signal: dict) -> dict:
@@ -165,17 +204,22 @@ async def _analyze_with_claude(signal: dict, api_key: str, mode: str) -> str:
     import anthropic
 
     ctx = _extract_context(signal)
-    template = SWING_PROMPT if mode == "swing" else SCALP_PROMPT
+    if mode == "swing":
+        template = SWING_PROMPT
+    elif mode == "daytrade":
+        template = DAYTRADE_PROMPT
+    else:
+        template = SCALP_PROMPT
 
-    prompt = template.format(
+    fmt_kwargs = dict(
         pair=signal.get("pair", "N/A"),
         direction=signal.get("direction", "N/A"),
         timeframe=signal.get("timeframe", "1H"),
         entry=signal.get("entry", 0),
         stop_loss=signal.get("stop_loss", 0),
         tp1=signal.get("tp1", 0),
-        tp2=signal.get("tp2", 0),
-        tp3=signal.get("tp3", 0),
+        tp2=signal.get("tp2") or signal.get("tp1", 0),
+        tp3=signal.get("tp3") or signal.get("tp2") or signal.get("tp1", 0),
         rr_ratio=signal.get("rr_ratio", 0),
         confidence=signal.get("confidence", 0),
         reasons=", ".join(signal.get("reasons", [])),
@@ -186,6 +230,11 @@ async def _analyze_with_claude(signal: dict, api_key: str, mode: str) -> str:
         orderblock=ctx["orderblock"],
         rsi_div=ctx["rsi_div"],
     )
+    # DAYTRADE_PROMPT doesn't use orderblock/rsi_div — use only common fields
+    try:
+        prompt = template.format(**fmt_kwargs)
+    except KeyError:
+        prompt = SCALP_PROMPT.format(**fmt_kwargs)
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
     message = await client.messages.create(
@@ -215,16 +264,21 @@ async def _analyze_with_mlx(signal: dict, mode: str = "scalp") -> str:
         print("[MLX] Modelo pronto.")
 
     ctx = _extract_context(signal)
-    template = SWING_PROMPT if mode == "swing" else SCALP_PROMPT
-    prompt = template.format(
+    if mode == "swing":
+        template = SWING_PROMPT
+    elif mode == "daytrade":
+        template = DAYTRADE_PROMPT
+    else:
+        template = SCALP_PROMPT
+    fmt_kwargs = dict(
         pair=signal.get("pair", "N/A"),
         direction=signal.get("direction", "N/A"),
         timeframe=signal.get("timeframe", "1H"),
         entry=signal.get("entry", 0),
         stop_loss=signal.get("stop_loss", 0),
         tp1=signal.get("tp1", 0),
-        tp2=signal.get("tp2", 0),
-        tp3=signal.get("tp3", 0),
+        tp2=signal.get("tp2") or signal.get("tp1", 0),
+        tp3=signal.get("tp3") or signal.get("tp2") or signal.get("tp1", 0),
         rr_ratio=signal.get("rr_ratio", 0),
         confidence=signal.get("confidence", 0),
         reasons=", ".join(signal.get("reasons", [])),
@@ -235,6 +289,10 @@ async def _analyze_with_mlx(signal: dict, mode: str = "scalp") -> str:
         orderblock=ctx["orderblock"],
         rsi_div=ctx["rsi_div"],
     )
+    try:
+        prompt = template.format(**fmt_kwargs)
+    except KeyError:
+        prompt = SCALP_PROMPT.format(**fmt_kwargs)
 
     from mlx_lm import generate as mlx_generate
     loop = asyncio.get_event_loop()
@@ -255,16 +313,21 @@ async def _analyze_with_ollama(signal: dict, model: str = "llama3.2", mode: str 
     import aiohttp, json
 
     ctx = _extract_context(signal)
-    template = SWING_PROMPT if mode == "swing" else SCALP_PROMPT
-    prompt = template.format(
+    if mode == "swing":
+        template = SWING_PROMPT
+    elif mode == "daytrade":
+        template = DAYTRADE_PROMPT
+    else:
+        template = SCALP_PROMPT
+    fmt_kwargs = dict(
         pair=signal.get("pair", "N/A"),
         direction=signal.get("direction", "N/A"),
         timeframe=signal.get("timeframe", "1H"),
         entry=signal.get("entry", 0),
         stop_loss=signal.get("stop_loss", 0),
         tp1=signal.get("tp1", 0),
-        tp2=signal.get("tp2", 0),
-        tp3=signal.get("tp3", 0),
+        tp2=signal.get("tp2") or signal.get("tp1", 0),
+        tp3=signal.get("tp3") or signal.get("tp2") or signal.get("tp1", 0),
         rr_ratio=signal.get("rr_ratio", 0),
         confidence=signal.get("confidence", 0),
         reasons=", ".join(signal.get("reasons", [])),
@@ -275,6 +338,10 @@ async def _analyze_with_ollama(signal: dict, model: str = "llama3.2", mode: str 
         orderblock=ctx["orderblock"],
         rsi_div=ctx["rsi_div"],
     )
+    try:
+        prompt = template.format(**fmt_kwargs)
+    except KeyError:
+        prompt = SCALP_PROMPT.format(**fmt_kwargs)
 
     payload = {"model": model, "prompt": prompt, "stream": False, "options": {"num_predict": 200}}
     async with aiohttp.ClientSession() as session:
@@ -285,14 +352,15 @@ async def _analyze_with_ollama(signal: dict, model: str = "llama3.2", mode: str 
 
 
 async def analyze_weekly_macro(market_data: dict, api_key: str = None) -> str:
-    """Gera análise macro semanal para segunda-feira.
+    """Gera análise macro (segunda ou quinta) com Fear&Greed e dados de mercado.
 
     market_data deve conter:
       btc_price, btc_rsi, btc_trend, btc_change,
       eth_price, eth_rsi, eth_trend, eth_change,
       sol_price, sol_rsi, sol_trend,
       btc_dominance, bullish_count, bearish_count, total_pairs,
-      conviction_count, week
+      conviction_count, week, weekday,
+      fear_greed_value, fear_greed_label, fear_greed_yesterday
     """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
 
@@ -371,6 +439,14 @@ def _fallback_analysis(signal: dict, mode: str = "scalp") -> str:
             f"\n{conf_str}. R:R {rr}:1 — vale o risco."
             f"\nInvalida se fechar fora do SL. Simples assim."
             f"\nAlvos definidos, risco controlado. Vamos."
+        )
+
+    if mode == "daytrade":
+        return (
+            f"Setup intraday em {pair}. {conf_str}."
+            f"\nZona S: {ctx['support']:,.4f} / R: {ctx['resistance']:,.4f}. R:R {rr}:1."
+            f"\nMover SL para breakeven no TP1. {action}"
+            f"\nSaída total no TP2 — não deixa virar swing."
         )
 
     return (

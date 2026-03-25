@@ -21,7 +21,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes
 
 from modules.chart_generator import create_chart, create_pnl_chart
-from modules.llm_analyst import analyze_signal
+from modules.llm_analyst import analyze_signal, fetch_fear_greed
 from modules.performance import PerformanceDB
 from modules.position_sizer import calculate_risk_pct
 from modules.scanner import scan_pairs
@@ -92,6 +92,10 @@ class BloFinBot:
         self._unrealized_pnl_usd: float = 0.0  # atualizado a cada tick de preço
         self._current_bankroll: float = self.bankroll  # banca em tempo real
 
+        # Fila de sinais do portfolio agendados para envio ao longo do dia
+        # Cada item: {send_at: datetime, signal: dict, llm_mode: str}
+        self._pending_signals: list = []
+
         # Swing: terça e quinta, uma vez por dia cada
         self._swing_days = {1, 3}  # Monday=0 … Sunday=6 → terça=1, quinta=3
         self._last_swing_date: str = ""
@@ -161,6 +165,7 @@ class BloFinBot:
             "🔍 /scan — Escanear pares agora\n"
             "📋 /trades — Trades ativos\n"
             "📈 /stats — Performance semanal/mensal/anual\n"
+            "🎯 /performance — Breakdown por estilo (scalp/daytrade/swing)\n"
             "📊 /pnl — Gráfico de equity curve\n"
             "🖼 /share — Card de resultado do último trade\n"
             "⏹ /stop — Pausar scans automáticos\n"
@@ -205,6 +210,34 @@ class BloFinBot:
         stats = await self.db.get_stats_multi_period(bankroll=self.bankroll)
         text = format_stats_message(stats, starting_bankroll=self.bankroll)
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    async def cmd_performance(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Breakdown de performance por estilo (scalp / daytrade / swing)."""
+        by_style = await self.db.get_stats_by_style(days=30, bankroll=self.bankroll)
+        style_icons = {"scalp": "⚡", "daytrade": "📊", "swing": "📈"}
+        style_labels = {"scalp": "SCALP (15m/30m)", "daytrade": "DAY TRADE (1H/2H)", "swing": "SWING (4H/1D)"}
+        lines = ["📊 *Performance por Estilo — últimos 30d*", "━━━━━━━━━━━━━━━━━━━━━━━━━━", ""]
+        best_style = None
+        best_pnl   = None
+        for style in ("scalp", "daytrade", "swing"):
+            d = by_style.get(style, {})
+            if not d.get("trades"):
+                lines.append(f"{style_icons[style]} *{style_labels[style]}*\n  _Sem trades no período_\n")
+                continue
+            pnl_str = f"+${d['total_pnl_usd']:.2f}" if d["total_pnl_usd"] >= 0 else f"-${abs(d['total_pnl_usd']):.2f}"
+            avg_str = f"+${d['avg_pnl_usd']:.2f}" if d["avg_pnl_usd"] >= 0 else f"-${abs(d['avg_pnl_usd']):.2f}"
+            lines.append(
+                f"{style_icons[style]} *{style_labels[style]}*\n"
+                f"  Trades: `{d['trades']}` · WR: `{d['win_rate']}%`\n"
+                f"  Total: `{pnl_str}` · Avg/trade: `{avg_str}`\n"
+            )
+            if best_pnl is None or d["avg_pnl_usd"] > best_pnl:
+                best_pnl   = d["avg_pnl_usd"]
+                best_style = style_labels[style]
+        if best_style:
+            lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"🏆 _Melhor avg/trade: *{best_style}*_")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_pnl(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         trades = await self.db.get_recent_trades(limit=50)
@@ -637,8 +670,8 @@ class BloFinBot:
     # Lógica principal
     # ------------------------------------------------------------------
 
-    async def _send_weekly_macro(self):
-        """Segunda-feira: coleta dados de mercado, gera análise macro e entradas de convicção."""
+    async def _send_weekly_macro(self, weekday_name: str = "Segunda-feira"):
+        """Coleta dados de mercado + Fear&Greed, gera análise macro e entradas de convicção."""
         from modules.llm_analyst import analyze_weekly_macro
 
         logger.info("Gerando análise macro semanal...")
@@ -693,26 +726,33 @@ class BloFinBot:
             elif btc_rsi < 35:
                 bias = "bullish"
 
+            # Fetch Fear & Greed Index
+            fg = await fetch_fear_greed()
+
             week_str = datetime.now().strftime("%d/%m")
             market_data = {
-                "week":            week_str,
-                "btc_price":       f"${btc.get('price', 0):,.0f}",
-                "btc_rsi":         btc.get("rsi", 50),
-                "btc_trend":       btc.get("trend", "lateral"),
-                "btc_change":      btc.get("change_pct", 0.0),
-                "eth_price":       f"${eth.get('price', 0):,.0f}",
-                "eth_rsi":         eth.get("rsi", 50),
-                "eth_trend":       eth.get("trend", "lateral"),
-                "eth_change":      eth.get("change_pct", 0.0),
-                "sol_price":       f"${sol.get('price', 0):,.0f}",
-                "sol_rsi":         sol.get("rsi", 50),
-                "sol_trend":       sol.get("trend", "lateral"),
-                "btc_dominance":   "estimado ~55%" if btc.get("change_pct", 0) > eth.get("change_pct", 0) else "reduzindo",
-                "bullish_count":   bullish_count,
-                "bearish_count":   bearish_count,
-                "total_pairs":     total_scanned,
-                "conviction_count": len(conviction_signals),
-                "bias":            bias,
+                "week":                 week_str,
+                "weekday":              weekday_name,
+                "btc_price":            f"${btc.get('price', 0):,.0f}",
+                "btc_rsi":              btc.get("rsi", 50),
+                "btc_trend":            btc.get("trend", "lateral"),
+                "btc_change":           btc.get("change_pct", 0.0),
+                "eth_price":            f"${eth.get('price', 0):,.0f}",
+                "eth_rsi":              eth.get("rsi", 50),
+                "eth_trend":            eth.get("trend", "lateral"),
+                "eth_change":           eth.get("change_pct", 0.0),
+                "sol_price":            f"${sol.get('price', 0):,.0f}",
+                "sol_rsi":              sol.get("rsi", 50),
+                "sol_trend":            sol.get("trend", "lateral"),
+                "btc_dominance":        "estimado ~55%" if btc.get("change_pct", 0) > eth.get("change_pct", 0) else "reduzindo",
+                "bullish_count":        bullish_count,
+                "bearish_count":        bearish_count,
+                "total_pairs":          total_scanned,
+                "conviction_count":     len(conviction_signals),
+                "bias":                 bias,
+                "fear_greed_value":     fg["value"],
+                "fear_greed_label":     fg["label"],
+                "fear_greed_yesterday": fg["yesterday"],
             }
 
             # ── Gera análise com LLM ─────────────────────────────────────────
@@ -797,6 +837,54 @@ class BloFinBot:
             return "premium"
         return "scalp"
 
+    def _generate_portfolio_times(self, n: int = 6) -> list[datetime]:
+        """Divide o dia de trading em n slots e sorteia um horário por slot.
+
+        Janela: 09:30 → 21:30 (12h). Cada slot tem ~2h. O resultado garante que
+        nenhum sinal saia muito próximo do outro e que cubram o dia inteiro.
+        """
+        from datetime import date as _date, time as _time
+        start_h = 9.5    # 09:30
+        end_h   = 21.5   # 21:30
+        slot    = (end_h - start_h) / n
+        today   = _date.today()
+        times   = []
+        for i in range(n):
+            lo = start_h + i * slot + 0.10        # buffer de 6min nas bordas
+            hi = start_h + (i + 1) * slot - 0.10
+            rh = random.uniform(lo, hi)
+            h, m = int(rh), int((rh % 1) * 60)
+            times.append(datetime.combine(today, _time(h, m)))
+        return times
+
+    async def _send_pending_signal(self, pending: dict):
+        """Envia um sinal individual da fila de portfolio."""
+        signal   = pending["signal"]
+        llm_mode = pending.get("llm_mode", "swing")
+
+        analysis  = await analyze_signal(signal, mode=llm_mode)
+        chart_buf = create_chart(signal, self.config)
+        msg       = format_signal_message(signal, analysis=analysis,
+                                          ref_link=self.ref_link, mode=llm_mode)
+
+        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
+        if self.vip_channel_id and self.vip_channel_id not in targets:
+            targets.append(self.vip_channel_id)
+        if self.free_channel_id and self.free_channel_id not in targets:
+            targets.append(self.free_channel_id)
+
+        logger.info(
+            f"[PORTFOLIO AGENDADO] {signal['pair']} {signal['direction']} "
+            f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')} "
+            f"tp_count={signal.get('tp_count')}"
+        )
+
+        for target in targets:
+            await self._send(msg, photo=chart_buf, chat_id=target)
+
+        self._last_signal_at = datetime.now(timezone.utc)
+        await self.db.save_trade(self.tracker.add_trade(signal).to_dict(), bankroll=self.bankroll)
+
     async def _scan_cycle(self, mission: dict = None, chat_id: str = None) -> int:
         """Escaneia pares e envia sinais. mission = {bar, mode, max_signals}.
 
@@ -867,22 +955,60 @@ class BloFinBot:
         if self.free_channel_id and self.free_channel_id not in targets:
             targets.append(self.free_channel_id)
 
-        # Portfolio: envia header primeiro
+        _SCALP_BARS = {"1m", "3m", "5m", "15m", "30m"}
+        _SWING_BARS = {"4H", "1D", "3D", "1W"}
+
+        # Portfolio: calcula sizing, envia header agora e agenda sinais ao longo do dia
         if is_portfolio and len(selected) >= 2:
-            # Calcula sizing antes para mostrar risco total no header
             for s in selected:
                 risk_pct, sizing_reason = calculate_risk_pct(s, sizing_stats)
                 s["risk_pct"]    = risk_pct
                 s["sizing_info"] = sizing_reason
+
+            # Header imediato com viés e estrutura do dia
             header_msg = format_portfolio_header(selected, bias, ref_link=self.ref_link)
             for target in targets:
                 await self._send(header_msg, chat_id=target)
-            await asyncio.sleep(1)
+
+            # Agenda cada sinal num horário aleatório ao longo do dia
+            send_times = self._generate_portfolio_times(len(selected))
+            for signal, send_at in zip(selected, send_times):
+                signal["trade_mode"] = "swing"
+                signal["setup_type"] = self._classify_setup(signal, "swing")
+                signal["trade_style"] = signal.get("trade_style") or "swing"
+                signal["bankroll"] = self.bankroll
+                self._pending_signals.append({
+                    "send_at":  send_at,
+                    "signal":   signal,
+                    "llm_mode": "swing",
+                })
+            self._pending_signals.sort(key=lambda p: p["send_at"])
+            next_times = ", ".join(
+                p["signal"]["pair"] + "@" + p["send_at"].strftime("%H:%M")
+                for p in self._pending_signals
+            )
+            logger.info(f"Portfolio agendado: {next_times}")
+            return len(selected)
 
         for signal in selected:
             setup_type = self._classify_setup(signal, "swing" if is_portfolio else mode)
             signal["trade_mode"] = "swing" if is_portfolio else mode
             signal["setup_type"] = setup_type
+
+            # Assign trade_style from signal (already set by detect_signal) or derive
+            if not signal.get("trade_style"):
+                tf_up = bar.upper()
+                if tf_up in {b.upper() for b in _SCALP_BARS}:
+                    signal["trade_style"] = "scalp"
+                elif tf_up in {b.upper() for b in _SWING_BARS}:
+                    signal["trade_style"] = "swing"
+                else:
+                    signal["trade_style"] = "daytrade"
+
+            # LLM mode: use trade_style to pick prompt
+            llm_mode = signal["trade_style"] if signal["trade_style"] in ("scalp", "daytrade", "swing") else "swing"
+            if is_portfolio:
+                llm_mode = "swing"
 
             # Sizing dinâmico (já calculado no portfolio, calcula agora para outros modos)
             if not is_portfolio:
@@ -893,11 +1019,11 @@ class BloFinBot:
 
             trade      = self.tracker.add_trade(signal)
             await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
-            analysis   = await analyze_signal(signal, mode="swing" if is_portfolio else mode)
+            analysis   = await analyze_signal(signal, mode=llm_mode)
             chart_buf  = create_chart(signal, self.config)
             msg        = format_signal_message(signal, analysis=analysis,
                                                ref_link=self.ref_link,
-                                               mode="swing" if is_portfolio else mode)
+                                               mode=llm_mode)
 
             logger.info(
                 f"[{setup_type.upper()}] {signal['pair']} {signal['direction']} "
@@ -968,7 +1094,7 @@ class BloFinBot:
 
                 events_fired.append(event)
 
-                if event in ("SL_HIT", "TP3_HIT"):
+                if event == "SL_HIT" or event == trade.final_tp:
                     self.tracker.remove_trade(pair)
 
             except Exception as e:
@@ -1013,8 +1139,8 @@ class BloFinBot:
 
         if weekday in (5, 6):  # Fim de semana — portfolio mais leve
             templates = [
-                (time(9, 30),  20, "4H", "portfolio", 4),   # portfolio 4 sinais sáb/dom
-                (time(15,  0), 25, "4H", "swing",     1),   # oportunidade tarde
+                (time(9, 30),  20, "4H", "portfolio", 4),   # portfolio 4 sinais
+                (time(14,  0), 15, "15m", "scalp",    2),   # scalp tarde
                 (time(20,  0), 20, "1H", "swing",     1),   # sniper noturno
             ]
             bonus_chance = 0.20
@@ -1022,6 +1148,7 @@ class BloFinBot:
         elif weekday == 0:  # Segunda — portfolio de abertura de semana
             templates = [
                 (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio semanal completo
+                (time(11, 0),  10, "15m", "scalp",    2),   # scalp manhã
                 (time(13, 30), 20, "1H", "swing",     1),   # 1H tarde
                 (time(17,  0), 15, "4H", "swing",     1),   # 4H americano abre
                 (time(21,  0), 20, "1H", "swing",     1),   # noturno
@@ -1031,6 +1158,7 @@ class BloFinBot:
         elif weekday in (1, 3):  # Terça/Quinta — dias de swing
             templates = [
                 (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
+                (time(11, 30), 10, "15m", "scalp",    2),   # scalp manhã
                 (time(14,  0), 20, "1H", "swing",     1),   # oportunidade tarde
                 (time(18, 30), 20, "4H", "swing",     1),   # 4H europeu fecha
                 (time(21, 30), 20, "1H", "swing",     1),   # noturno americano
@@ -1040,8 +1168,10 @@ class BloFinBot:
         else:  # Quarta/Sexta — dias ativos
             templates = [
                 (time(9,  0),  15, "4H", "portfolio", 6),   # portfolio 6 sinais
+                (time(11, 0),  10, "15m", "scalp",    2),   # scalp manhã
                 (time(12, 30), 20, "1H", "swing",     1),   # almoço Europa
                 (time(15, 30), 15, "4H", "swing",     1),   # abertura NY
+                (time(19,  0), 10, "30m", "scalp",    2),   # scalp americano
                 (time(20,  0), 20, "1H", "swing",     2),   # noturno
             ]
             bonus_chance = 0.40
@@ -1110,13 +1240,38 @@ class BloFinBot:
                         except Exception as e:
                             logger.error(f"Erro ao enviar resumo semanal: {e}")
 
-                    # Segunda-feira 8h → análise macro + entradas de convicção
+                    # Segunda-feira 8h → análise macro semanal
                     if now.weekday() == 0 and now.hour == 8:
-                        await self._send_weekly_macro()
+                        await self._send_weekly_macro(weekday_name="Segunda-feira")
+
+                    # Quinta-feira 8h → segunda análise macro (se volatilidade alta)
+                    if now.weekday() == 3 and now.hour == 8:
+                        try:
+                            btc_candles = await self.api.get_candles("BTC-USDT", bar="4H", limit=20)
+                            if btc_candles:
+                                from utils.indicators import candles_to_df, add_all_indicators
+                                btc_df = add_all_indicators(candles_to_df(btc_candles))
+                                btc_atr = float(btc_df["atr"].iloc[-1]) if "atr" in btc_df.columns else 0
+                                btc_price = float(btc_df["close"].iloc[-1])
+                                atr_pct = btc_atr / btc_price * 100 if btc_price > 0 else 0
+                                if atr_pct >= 1.5:  # ATR ≥ 1.5% do preço → alta volatilidade
+                                    logger.info(f"Alta volatilidade detectada (ATR={atr_pct:.2f}%) — enviando análise quinta")
+                                    await self._send_weekly_macro(weekday_name="Quinta-feira")
+                        except Exception as e:
+                            logger.warning(f"Erro ao checar volatilidade BTC: {e}")
 
                 if self.running:
                     # Atualiza trades ativos a cada tick
                     await self._update_trades()
+
+                    # Envia sinais do portfolio agendados cujo horário chegou
+                    due_sigs = [p for p in self._pending_signals if p["send_at"] <= now]
+                    self._pending_signals = [p for p in self._pending_signals if p["send_at"] > now]
+                    for pending in due_sigs:
+                        try:
+                            await self._send_pending_signal(pending)
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar sinal agendado {pending['signal'].get('pair')}: {e}")
 
                     # Dispara missões cujo horário já passou
                     due      = [m for m in missions if m["time"] <= now]
@@ -1196,6 +1351,7 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("scan", self.cmd_scan))
         self._app.add_handler(CommandHandler("trades", self.cmd_trades))
         self._app.add_handler(CommandHandler("stats", self.cmd_stats))
+        self._app.add_handler(CommandHandler("performance", self.cmd_performance))
         self._app.add_handler(CommandHandler("pnl", self.cmd_pnl))
         self._app.add_handler(CommandHandler("stop", self.cmd_stop))
         self._app.add_handler(CommandHandler("resume", self.cmd_resume))

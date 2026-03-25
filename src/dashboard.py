@@ -1130,6 +1130,164 @@ Tom: direto, educativo, sem jargão desnecessário. Português. Máximo 3 parág
     async def health(request):
         return web.Response(text="ok")
 
+    # ──────────────────────────────────────────────────────────────────────
+    # WEBHOOKS DE PAGAMENTO — liberação automática de acesso VIP
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def _process_webhook(platform: str, request: web.Request) -> web.Response:
+        """Handler genérico para todos os webhooks de pagamento."""
+        import asyncio
+        from modules.payment import PaymentManager
+
+        body = await request.read()
+        headers = dict(request.headers)
+
+        pm: PaymentManager = getattr(bot_instance, "payment_manager", None)
+        if pm is None:
+            import logging
+            logging.getLogger(__name__).error(
+                "PaymentManager não inicializado no bot — webhook ignorado"
+            )
+            return web.Response(status=500, text="payment_manager not initialized")
+
+        provider = pm.get_provider(platform)
+        if provider is None:
+            return web.Response(status=400, text=f"Unknown platform: {platform}")
+
+        if not provider.verify_signature(headers, body):
+            return web.Response(status=401, text="Invalid signature")
+
+        event = provider.parse_webhook(headers, body)
+        if event:
+            asyncio.create_task(pm.process_event(event))
+
+        return web.Response(text="ok")
+
+    async def webhook_hotmart(request):
+        """
+        Webhook Hotmart — configure no painel:
+          Ferramentas → Webhooks → https://bot-blofin.onrender.com/webhook/hotmart
+        Variável necessária: HOTMART_SECRET
+        """
+        return await _process_webhook("hotmart", request)
+
+    async def webhook_stripe(request):
+        """
+        Webhook Stripe — configure no painel:
+          Developers → Webhooks → https://bot-blofin.onrender.com/webhook/stripe
+        Variável necessária: STRIPE_WEBHOOK_SECRET
+        """
+        return await _process_webhook("stripe", request)
+
+    async def webhook_mercadopago(request):
+        """
+        Webhook Mercado Pago — configure no painel:
+          Suas integrações → Webhooks → https://bot-blofin.onrender.com/webhook/mercadopago
+        Variável necessária: MERCADOPAGO_ACCESS_TOKEN
+        """
+        return await _process_webhook("mercadopago", request)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # API DE ASSINANTES — gerenciamento administrativo
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def api_subscribers(request):
+        """
+        GET  /api/subscribers         — lista assinantes ativos (requer auth)
+        GET  /api/subscribers?all=1   — lista todos incluindo expirados
+        POST /api/subscribers/add     — adiciona VIP manual (admin)
+        """
+        if not _check_auth(request):
+            return web.Response(status=401, text="Unauthorized")
+
+        show_all = request.rel_url.query.get("all") == "1"
+        try:
+            rows = await bot_instance.db.list_subscribers(active_only=not show_all)
+            # Não expõe o campo raw de pagamento
+            safe = [
+                {
+                    "id": r.get("id"),
+                    "email": r.get("email"),
+                    "name": r.get("name"),
+                    "telegram_id": r.get("telegram_id"),
+                    "plan": r.get("plan"),
+                    "status": r.get("status"),
+                    "platform": r.get("platform"),
+                    "expires_at": r.get("expires_at"),
+                    "created_at": r.get("created_at"),
+                }
+                for r in rows
+            ]
+            return web.json_response({"count": len(safe), "subscribers": safe})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_add_vip(request):
+        """
+        POST /api/vip/add
+        Body JSON: { "telegram_id": "123456", "email": "user@x.com", "plan": "monthly" }
+        Adiciona VIP manual (sem webhook de pagamento).
+        """
+        if not _check_auth(request):
+            return web.Response(status=401, text="Unauthorized")
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        telegram_id = str(data.get("telegram_id", "")).strip()
+        email = data.get("email", f"manual_{telegram_id}@sidquant.bot")
+        plan = data.get("plan", "monthly")
+
+        if not telegram_id:
+            return web.json_response({"error": "telegram_id required"}, status=400)
+
+        from datetime import datetime, timedelta, timezone
+        duration = 366 if plan == "annual" else 31
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=duration)).isoformat()
+
+        sub_id = await bot_instance.db.add_subscriber(
+            email=email,
+            name=data.get("name", ""),
+            telegram_id=telegram_id,
+            plan=plan,
+            expires_at=expires_at,
+            platform="manual",
+            payment_id="",
+        )
+
+        # Também adiciona na memória imediata do bot
+        bot_instance._vip_ids.add(telegram_id)
+
+        return web.json_response({
+            "ok": True,
+            "sub_id": sub_id,
+            "telegram_id": telegram_id,
+            "plan": plan,
+            "expires_at": expires_at[:10],
+        })
+
+    async def api_revoke_vip(request):
+        """
+        POST /api/vip/revoke
+        Body JSON: { "telegram_id": "123456" } ou { "email": "user@x.com" }
+        """
+        if not _check_auth(request):
+            return web.Response(status=401, text="Unauthorized")
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        telegram_id = str(data.get("telegram_id", "")).strip()
+        email = data.get("email", "")
+
+        await bot_instance.db.revoke_subscriber(email=email)
+        if telegram_id:
+            bot_instance._vip_ids.discard(telegram_id)
+
+        return web.json_response({"ok": True})
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/", index)
@@ -1138,4 +1296,12 @@ Tom: direto, educativo, sem jargão desnecessário. Português. Máximo 3 parág
     app.router.add_get("/api/share", api_share)
     app.router.add_post("/api/chat", api_chat)
     app.router.add_get("/api/pricing", api_pricing)
+    # Webhooks de pagamento (sem auth — autenticados por assinatura do provider)
+    app.router.add_post("/webhook/hotmart",      webhook_hotmart)
+    app.router.add_post("/webhook/stripe",       webhook_stripe)
+    app.router.add_post("/webhook/mercadopago",  webhook_mercadopago)
+    # API de gestão de assinantes (com auth)
+    app.router.add_get("/api/subscribers",       api_subscribers)
+    app.router.add_post("/api/vip/add",          api_add_vip)
+    app.router.add_post("/api/vip/revoke",       api_revoke_vip)
     return app

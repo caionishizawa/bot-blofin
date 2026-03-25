@@ -134,6 +134,27 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+_SCALP_BARS = {"1m", "3m", "5m", "15m", "30m"}
+_SWING_BARS  = {"4H", "1D", "3D", "1W"}
+
+
+def _pick_tp_structure(bar: str, rr: float, confidence: int) -> int:
+    """Return tp_count (1, 2 or 3) based on timeframe, RR and confidence.
+
+    Rules:
+      1 — scalp (≤30m): in-and-out, close everything at TP1
+      2 — intraday (1H/2H) or sniper (rr ≥ 4.0): 40% TP1, 60% TP2
+      3 — swing (4H+) with high confidence: full 3-TP structure
+    """
+    bar_up = bar.upper() if bar else "1H"
+    if bar_up in {b.upper() for b in _SCALP_BARS}:
+        return 1
+    if bar_up in {b.upper() for b in _SWING_BARS}:
+        return 3
+    # Intraday: 2 TPs by default; sniper (rr ≥ 4.0) also 2 TPs for clean exit
+    return 2
+
+
 def detect_signal(df: pd.DataFrame, scalp: bool = False, bar: str = "1H") -> dict | None:
     """Detect trading signal based on confluence of indicators.
 
@@ -261,13 +282,36 @@ def detect_signal(df: pd.DataFrame, scalp: bool = False, bar: str = "1H") -> dic
     score_10 = min(10.0, score_10)
     confidence = min(100, int(score_10 * 10))
 
+    # TP structure selection
+    tp_count = _pick_tp_structure(bar, rr_ratio, confidence)
+    if tp_count == 1:
+        tp2_out = None
+        tp3_out = None
+    elif tp_count == 2:
+        tp2_out = tp2
+        tp3_out = None
+    else:
+        tp2_out = tp2
+        tp3_out = tp3
+
+    # Trade style label for analytics
+    bar_up = bar.upper() if bar else "1H"
+    if bar_up in {b.upper() for b in _SCALP_BARS}:
+        trade_style = "scalp"
+    elif bar_up in {b.upper() for b in _SWING_BARS}:
+        trade_style = "swing"
+    else:
+        trade_style = "daytrade"
+
     return {
         "direction": direction,
         "entry": entry,
         "stop_loss": stop_loss,
         "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
+        "tp2": tp2_out,
+        "tp3": tp3_out,
+        "tp_count": tp_count,
+        "trade_style": trade_style,
         "score": score_10,
         "confidence": confidence,
         "rr_ratio": rr_ratio,
