@@ -84,7 +84,8 @@ class BloFinBot:
         self.vip_channel_id   = os.getenv("TELEGRAM_VIP_CHANNEL_ID",  self.channel_id)
         self.admin_id         = os.getenv("TELEGRAM_ADMIN_ID", "")
         self._last_signal_at: Optional[datetime] = None
-        self.ref_link = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
+        self.ref_link  = os.getenv("BLOFIN_REF_LINK", self.config.get("ref_link", ""))
+        self.calc_link = os.getenv("CALCULATOR_LINK", "")
         self.bankroll = float(self.config.get("starting_bankroll", 1000.0))
         self.admin_ids = set(filter(None, os.getenv("ADMIN_IDS", "").split(",")))
         self._today_schedule: list = []
@@ -862,6 +863,7 @@ class BloFinBot:
         signal   = pending["signal"]
         llm_mode = pending.get("llm_mode", "swing")
 
+        signal["calc_link"] = self.calc_link
         analysis  = await analyze_signal(signal, mode=llm_mode)
         chart_buf = create_chart(signal, self.config)
         msg       = format_signal_message(signal, analysis=analysis,

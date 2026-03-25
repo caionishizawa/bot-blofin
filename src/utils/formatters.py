@@ -389,6 +389,9 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
         if tp3:
             tp_lines.append(f"🏆 *A3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · {splits['tp3']}% runner")
 
+    risk_pct    = float(signal.get("risk_pct", 1.5))
+    calc_link   = signal.get("calc_link", "")
+
     lines = [
         f"{dir_emoji} *{pair}* — {dir_label}  `{tf}`",
         f"_{setup_label}  ·  {setup_sub}_",
@@ -398,7 +401,11 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
         *tp_lines,
         f"",
         f"⚖️ R:R `{rr}:1` {rr_label}  ·  Conf: {conf_bar} {confidence}%",
+        f"💰 Risco sugerido: *{risk_pct:.1f}% da banca*",
     ]
+
+    if calc_link:
+        lines.append(f"🧮 [Calcule o tamanho da posição]({calc_link})")
 
     if analysis:
         safe = analysis.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
