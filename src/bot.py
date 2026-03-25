@@ -1142,22 +1142,33 @@ class BloFinBot:
         n_signals = 4 if weekday in (5, 6) else 6
 
         # Horário do scan de seleção: entre 08:45 e 09:15 (aleatório)
-        base   = datetime.combine(today, time(9, 0))
-        offset = random.randint(-15, 15)
+        base       = datetime.combine(today, time(9, 0))
+        offset     = random.randint(-15, 15)
+        scan_time  = base + timedelta(minutes=offset)
+
+        # Proteção contra restart após 09h: se o horário já passou hoje,
+        # não agenda nada — evita segundo lote no mesmo dia.
+        now = datetime.now()
+        if scan_time <= now:
+            logger.warning(
+                f"Restart detectado após horário do scan ({scan_time.strftime('%H:%M')}). "
+                f"Nenhuma missão agendada para hoje — próximo scan amanhã."
+            )
+            self._today_schedule = []
+            return []
+
         missions = [{
-            "time":        base + timedelta(minutes=offset),
+            "time":        scan_time,
             "bar":         "4H",
             "mode":        "portfolio",
             "max_signals": n_signals,
         }]
 
-        missions.sort(key=lambda m: m["time"])
         self._today_schedule = [m["time"] for m in missions]
 
         logger.info(
             f"Agenda [{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'][weekday]}] "
-            f"{len(missions)} missões: "
-            + ", ".join(f"{m['time'].strftime('%H:%M')}[{m['bar']}/{m['mode']}]" for m in missions)
+            f"1 missão: {scan_time.strftime('%H:%M')} [4H/portfolio] max={n_signals}"
         )
         return missions
 
