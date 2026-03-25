@@ -339,6 +339,15 @@ class BloFinBot:
             return False  # bloqueia tudo se ADMIN_IDS não estiver configurado
         return str(update.effective_user.id) in self.admin_ids
 
+    async def cmd_cleartrades(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: limpa todos os trades ativos do tracker. Uso: /cleartrades"""
+        if not self._is_admin(update):
+            await update.message.reply_text("⛔ Acesso restrito.")
+            return
+        count = len(self.tracker.active_trades)
+        self.tracker.active_trades.clear()
+        await update.message.reply_text(f"✅ {count} trade(s) removido(s) do tracker.")
+
     async def cmd_newtrade(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Cria um trade manual. Uso: /newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3"""
         if not self._is_admin(update):
@@ -1383,6 +1392,7 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("enable", self.cmd_enable))
         self._app.add_handler(CommandHandler("disable", self.cmd_disable))
         self._app.add_handler(CommandHandler("groups", self.cmd_groups))
+        self._app.add_handler(CommandHandler("cleartrades", self.cmd_cleartrades))
         self._app.add_handler(CommandHandler("newtrade", self.cmd_newtrade))
         self._app.add_handler(CommandHandler("agenda", self.cmd_agenda))
         self._app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
