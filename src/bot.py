@@ -970,11 +970,6 @@ class BloFinBot:
                 s["risk_pct"]    = risk_pct
                 s["sizing_info"] = sizing_reason
 
-            # Header imediato com viés e estrutura do dia
-            header_msg = format_portfolio_header(selected, bias, ref_link=self.ref_link)
-            for target in targets:
-                await self._send(header_msg, chat_id=target)
-
             # Agenda cada sinal num horário aleatório ao longo do dia
             send_times = self._generate_portfolio_times(len(selected))
             for signal, send_at in zip(selected, send_times):
