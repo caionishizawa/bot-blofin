@@ -867,11 +867,12 @@ class BloFinBot:
         msg       = format_signal_message(signal, analysis=analysis,
                                           ref_link=self.ref_link, mode=llm_mode)
 
-        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-        if self.vip_channel_id and self.vip_channel_id not in targets:
-            targets.append(self.vip_channel_id)
-        if self.free_channel_id and self.free_channel_id not in targets:
+        # Envia apenas ao canal free
+        targets = []
+        if self.free_channel_id:
             targets.append(self.free_channel_id)
+        elif self.channel_id:
+            targets.append(self.channel_id)
 
         logger.info(
             f"[PORTFOLIO AGENDADO] {signal['pair']} {signal['direction']} "
@@ -947,13 +948,15 @@ class BloFinBot:
         except Exception:
             sizing_stats = {}
 
-        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-        if chat_id and chat_id not in targets:
+        # Envio automático apenas ao canal free; chat_id só para comandos manuais
+        targets = []
+        if chat_id:
             targets.append(chat_id)
-        if not targets and self.vip_channel_id:
-            targets = [self.vip_channel_id]
-        if self.free_channel_id and self.free_channel_id not in targets:
-            targets.append(self.free_channel_id)
+        else:
+            if self.free_channel_id:
+                targets.append(self.free_channel_id)
+            elif self.channel_id:
+                targets.append(self.channel_id)
 
         _SCALP_BARS = {"1m", "3m", "5m", "15m", "30m"}
         _SWING_BARS = {"4H", "1D", "3D", "1W"}

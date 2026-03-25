@@ -293,26 +293,14 @@ def format_portfolio_header(signals: list, bias: str, ref_link: str = "") -> str
     weekday = weekday_names[datetime.now().weekday()]
 
     lines = [
-        f"⚡ *{BRAND_NAME}* — PORTFOLIO {now} ({weekday})",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"{bias_emoji} Viés de mercado: *{bias_label}*",
+        f"⚡ *@sideradogcripto* — {now} ({weekday})",
         f"",
-        f"├ {n_longs} operações LONG  ({long_pct}%)",
-        f"└ {n_shorts} operações SHORT ({short_pct}%)",
-        f"",
-        f"📐 Hedge parcial — net exposure: `{net_label}`",
-        f"⚠️ Risco total alocado: `{total_risk}% da banca`",
-        f"⏱ Timeframe: `{main_tf}` _(swing/longo prazo)_",
-        f"",
-        f"_Estrutura: se acertar o viés você ganha nas {n_longs if bias == 'bullish' else n_shorts} posições maiores._",
-        f"_Se errar, as {n_shorts if bias == 'bullish' else n_longs} posições opostas protegem parte da banca._",
-        f"",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"_{total} sinais abaixo 👇_",
+        f"{bias_emoji} Viés: *{bias_label}*  ·  {n_longs}L / {n_shorts}S  (`{net_label}`)",
+        f"_{total} sinais ao longo do dia 👇_",
     ]
 
     if ref_link:
-        lines += [f"", f"🔗 [Abrir conta BloFin para operar]({ref_link})"]
+        lines += [f"", f"🔗 [Opere na BloFin]({ref_link})"]
 
     return "\n".join(lines)
 
@@ -358,13 +346,13 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
     tp2        = signal.get("tp2", 0)
     tp3        = signal.get("tp3", 0)
     confidence = signal.get("confidence", 0)
+    tp_count   = int(signal.get("tp_count", 3))
+    splits     = TP_SIZING.get(tp_count, TP_SIZING[3])
 
     dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    dir_label = "LONG  ↑" if direction == "LONG" else "SHORT  ↓"
+    dir_label = "LONG ↑" if direction == "LONG" else "SHORT ↓"
 
-    sl_dist  = abs(entry - sl)
-    tp_count = int(signal.get("tp_count", 3))
-    splits   = TP_SIZING.get(tp_count, TP_SIZING[3])
+    sl_dist = abs(entry - sl)
     rr = signal.get("rr_ratio", 0)
     if sl_dist > 0 and tp1:
         s1 = splits.get("tp1", 35) / 100
@@ -376,83 +364,50 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
             (abs(tp3 - entry) / sl_dist * s3 if tp3 else 0), 2
         )
 
-    # Variação % de cada nível em relação à entrada
     def _chg(price):
         if not entry: return 0.0
         return ((price - entry) / entry * 100) if direction == "LONG" else ((entry - price) / entry * 100)
 
     raw_setup   = signal.get("setup_type") or ("sniper" if rr >= 4.5 else mode)
     setup_label, setup_sub = SETUP_META.get(raw_setup, SETUP_META["scalp"])
-    opening     = _opening_phrase(direction, raw_setup, recent_wins)
     conf_bar    = _confidence_bar(confidence)
     rr_label    = _rr_label(rr)
-    now         = datetime.now(timezone.utc).strftime("%d/%m %H:%M UTC")
-    footer      = _context_footer(recent_wins, recent_losses)
-    tp_count    = int(signal.get("tp_count", 3))
-    risk_pct    = float(signal.get("risk_pct", 1.5))
-    sizing_info = signal.get("sizing_info", "")
-    splits      = TP_SIZING.get(tp_count, TP_SIZING[3])
-    pos_table   = _pos_table(entry, sl, direction, risk_pct=risk_pct, sizing_info=sizing_info, tp_count=tp_count)
+    now         = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
 
-    # Build TP lines based on structure
-    tp_lines = [
-        f"──────────────────────────",
-        f"🎯 *Alvo 1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_",
-    ]
+    # TP lines
+    tp_lines = [f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_"]
     if tp_count == 1:
-        tp_lines[-1] += f"  · fechar *100%* (scalp)"
+        tp_lines[-1] += "  · 100% saída"
     elif tp_count == 2:
-        tp_lines[-1] += f"  · {splits['tp1']}% + mover SL → breakeven"
+        tp_lines[-1] += f"  · {splits['tp1']}% → mover SL"
         if tp2:
-            tp_lines.append(f"🏆 *Alvo 2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar *{splits['tp2']}%* (final)")
+            tp_lines.append(f"🏆 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · {splits['tp2']}% final")
     else:
-        tp_lines[-1] += f"  · {splits['tp1']}% + mover SL → breakeven"
+        tp_lines[-1] += f"  · {splits['tp1']}% → mover SL"
         if tp2:
-            tp_lines.append(f"🎯 *Alvo 2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · fechar *{splits['tp2']}%*")
+            tp_lines.append(f"🎯 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · {splits['tp2']}%")
         if tp3:
-            tp_lines.append(f"🏆 *Alvo 3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · runner *{splits['tp3']}%*")
+            tp_lines.append(f"🏆 *A3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · {splits['tp3']}% runner")
 
     lines = [
-        f"{BRAND_HEADER}  ·  *{setup_label}*",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"_{opening}_",
+        f"{dir_emoji} *{pair}* — {dir_label}  `{tf}`",
+        f"_{setup_label}  ·  {setup_sub}_",
         f"",
-        f"{dir_emoji} *{dir_label}*  `{pair}`  `{tf}`",
-        f"_{setup_sub}_",
-        f"",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📍 *Entrada*     `{_fmt_price(entry)}`",
-        f"🛑 *Stop Loss*  `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
+        f"📍 Entrada   `{_fmt_price(entry)}`",
+        f"🛑 Stop       `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
         *tp_lines,
         f"",
-        f"⚖️ R:R `{rr}:1` — {rr_label}  ·  📊 Conf: {conf_bar} {confidence}%",
-        f"🕐 _{now}_",
-        f"",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"⚖️ R:R `{rr}:1` {rr_label}  ·  Conf: {conf_bar} {confidence}%",
     ]
-
-    if pos_table:
-        lines += [pos_table, f""]
 
     if analysis:
         safe = analysis.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
-        lines += [
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"📈 *Análise:*",
-            safe,
-            f"",
-        ]
+        lines += [f"", f"💬 _{safe}_"]
 
-    lines += [
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        footer,
-    ]
+    lines += [f"", f"_{now} UTC  ·  @sideradogcripto_"]
 
     if ref_link:
-        lines += [
-            f"",
-            f"🔗 [Abrir conta BloFin — opere esses sinais]({ref_link})",
-        ]
+        lines += [f"", f"🔗 [Opere na BloFin]({ref_link})"]
 
     return "\n".join(lines)
 
