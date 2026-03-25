@@ -97,6 +97,9 @@ class BloFinBot:
         # Cada item: {send_at: datetime, signal: dict, llm_mode: str}
         self._pending_signals: list = []
 
+        # Garante que o portfolio só roda UMA vez por dia, mesmo com restart/redeploy
+        self._portfolio_sent_date: str = ""
+
         # Swing: terça e quinta, uma vez por dia cada
         self._swing_days = {1, 3}  # Monday=0 … Sunday=6 → terça=1, quinta=3
         self._last_swing_date: str = ""
@@ -910,6 +913,14 @@ class BloFinBot:
 
         is_portfolio = (mode == "portfolio")
 
+        # Proteção definitiva: portfolio só executa UMA vez por dia
+        today_str = date.today().isoformat()
+        if is_portfolio:
+            if self._portfolio_sent_date == today_str:
+                logger.warning("Portfolio já executado hoje — scan ignorado.")
+                return 0
+            self._portfolio_sent_date = today_str
+
         # Portfolio usa 4H com critério mais largo para ter sinais suficientes
         if is_portfolio:
             bar, min_rr, max_rr = "4H", 1.8, 6.0
@@ -964,7 +975,11 @@ class BloFinBot:
         _SWING_BARS = {"4H", "1D", "3D", "1W"}
 
         # Portfolio: calcula sizing, envia header agora e agenda sinais ao longo do dia
-        if is_portfolio and len(selected) >= 2:
+        if is_portfolio and len(selected) < 2:
+            logger.info("Portfolio: sinais insuficientes — nenhum envio hoje.")
+            return 0
+
+        if is_portfolio:
             for s in selected:
                 risk_pct, sizing_reason = calculate_risk_pct(s, sizing_stats)
                 s["risk_pct"]    = risk_pct
@@ -1184,6 +1199,7 @@ class BloFinBot:
                 if now.date() != current_day:
                     current_day = now.date()
                     self._pending_signals.clear()
+                    self._portfolio_sent_date = ""
                     missions = self._schedule_daily_scans()
 
                     # Domingo 20h → resumo semanal automático
