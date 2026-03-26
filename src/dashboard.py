@@ -322,6 +322,26 @@ HTML = """<!DOCTYPE html>
   .fade-in { animation: fadeIn .4s ease; }
   @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
+  /* ── OPUS SIGNAL ── */
+  .opus-btn {
+    display:flex;align-items:center;gap:10px;
+    background:linear-gradient(135deg,#7c3aed,#a855f7);
+    color:#fff;border:none;border-radius:12px;padding:14px 24px;
+    font-size:1rem;font-weight:700;cursor:pointer;width:100%;
+    justify-content:center;transition:opacity .2s,transform .1s;
+  }
+  .opus-btn:hover{opacity:.9;transform:scale(1.01)}
+  .opus-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+  .opus-result {
+    margin-top:16px;background:var(--panel);border-radius:12px;
+    padding:20px;font-size:.9rem;line-height:1.7;white-space:pre-wrap;
+    border:1px solid rgba(168,85,247,.3);display:none;
+  }
+  .opus-result.visible{display:block}
+  .opus-tag{display:inline-block;background:#7c3aed;color:#fff;
+    font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px;
+    margin-bottom:12px;letter-spacing:.5px}
+
   /* ── COUNTER ANIMATION ── */
   .counting { transition: all .6s cubic-bezier(.4,0,.2,1); }
 
@@ -389,6 +409,20 @@ HTML = """<!DOCTYPE html>
 
 <!-- MAIN -->
 <main class="main">
+
+  <!-- OPUS SIGNAL -->
+  <div style="margin-bottom:24px">
+    <div class="section-header">
+      <div class="section-title">Sinal Premium</div>
+      <div class="section-badge" style="background:rgba(124,58,237,.2);color:#a855f7">Claude Opus</div>
+    </div>
+    <div class="card">
+      <button class="opus-btn" id="opus-btn" onclick="gerarOpus()">
+        ✦ Gerar Análise Completa com Opus
+      </button>
+      <div class="opus-result" id="opus-result"></div>
+    </div>
+  </div>
 
   <!-- AGENDA -->
   <div style="margin-bottom:24px">
@@ -716,6 +750,28 @@ setInterval(() => {
 
 load();
 setInterval(load, 30000);
+
+async function gerarOpus() {
+  const btn = document.getElementById('opus-btn');
+  const box = document.getElementById('opus-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analisando mercado com Opus...';
+  box.className = 'opus-result';
+  box.innerHTML = '';
+  try {
+    const r = await fetch('/api/opus-signal', {method:'POST',headers:{'X-Dashboard-Secret': window._dsecret||''}});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    box.innerHTML = '<div class="opus-tag">✦ CLAUDE OPUS — ANÁLISE COMPLETA</div>\n' + (d.message || '').replace(/\n/g,'<br>');
+    box.className = 'opus-result visible fade-in';
+  } catch(e) {
+    box.innerHTML = '❌ Erro: ' + e.message;
+    box.className = 'opus-result visible';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✦ Gerar Análise Completa com Opus';
+  }
+}
 </script>
 
 <!-- ══════════════════════════════════════════════════
@@ -886,7 +942,8 @@ def create_dashboard(bot_instance):
         return token == _DASHBOARD_SECRET
 
     async def index(request):
-        return web.Response(text=HTML, content_type="text/html")
+        html = HTML.replace("window._dsecret||''", f"'{_DASHBOARD_SECRET}'")
+        return web.Response(text=html, content_type="text/html")
 
     async def api_status(request):
         trades = bot_instance.tracker.get_all()
@@ -1288,11 +1345,80 @@ Tom: direto, educativo, sem jargão desnecessário. Português. Máximo 3 parág
 
         return web.json_response({"ok": True})
 
+    async def api_opus_signal(request: web.Request) -> web.Response:
+        """Gera sinal premium com Claude Opus e análise completa."""
+        secret = os.getenv("DASHBOARD_SECRET", "")
+        if secret and request.headers.get("X-Dashboard-Secret") != secret:
+            return web.json_response({"error": "Não autorizado"}, status=401)
+
+        try:
+            import anthropic
+            from modules.scanner import scan_pairs
+            from utils.formatters import format_signal_message
+            from modules.llm_analyst import _extract_context
+
+            DEFAULT_PAIRS = [
+                "BTC-USDT","ETH-USDT","SOL-USDT","XRP-USDT","BNB-USDT",
+                "AVAX-USDT","LINK-USDT","DOT-USDT","INJ-USDT","ARB-USDT",
+            ]
+            signals = await scan_pairs(DEFAULT_PAIRS, bar="4H")
+            filtered = sorted(
+                [s for s in signals if s.get("rr_ratio",0)>=2.0 and s.get("confidence",0)>=60],
+                key=lambda s: s.get("score",0), reverse=True
+            )
+            if not filtered:
+                return web.json_response({"error": "Nenhum setup de qualidade encontrado agora. Tente mais tarde."})
+
+            signal = filtered[0]
+            signal["risk_pct"] = 1.5
+            signal["trade_style"] = "swing"
+            signal["setup_type"] = "premium"
+
+            ctx = _extract_context(signal)
+            opus_prompt = f"""Você é o melhor analista de cripto do mundo. Análise COMPLETA e profunda para um trader experiente. Português. Sem markdown.
+
+PAR: {signal.get('pair')} {signal.get('direction')} {signal.get('timeframe','4H')}
+Entrada: {signal.get('entry')} | Stop: {signal.get('stop_loss')} | R:R {signal.get('rr_ratio',0):.1f}:1
+TP1: {signal.get('tp1')} | TP2: {signal.get('tp2',0)} | TP3: {signal.get('tp3',0)}
+RSI: {ctx['rsi']:.0f} | ADX: {ctx['adx']:.0f} | Confiança: {signal.get('confidence')}%
+Suporte: {ctx['support']:.4f} | Resistência: {ctx['resistance']:.4f}
+Order Block: {ctx['orderblock']} | Divergência RSI: {ctx['rsi_div']}
+Confluências: {', '.join(signal.get('reasons', []))}
+
+Escreva 8 linhas de análise profissional:
+1. Contexto macro do par — ciclo atual, onde está no macro e no micro
+2. Estrutura técnica completa — o que cada indicador diz e como se alinham
+3. A zona de entrada — por que esse preço específico faz sentido
+4. Gestão do trade — SL, mover para BE no TP1, saídas parciais
+5. Cenário de invalidação — o que não pode acontecer e por quê
+6. Confluências mais fortes — o que eleva a qualidade desse setup
+7. Timing — quando executar, o que esperar nos próximos candles
+8. Conclusão executiva — executar agora, aguardar ou evitar. Seja decisivo."""
+
+            api_key = os.getenv("ANTHROPIC_API_KEY","")
+            client = anthropic.AsyncAnthropic(api_key=api_key)
+            resp = await client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=600,
+                messages=[{"role":"user","content":opus_prompt}],
+            )
+            analysis = resp.content[0].text.strip()
+
+            msg = format_signal_message(
+                signal, analysis=analysis,
+                ref_link=bot_instance.ref_link, mode="swing"
+            )
+            return web.json_response({"ok": True, "message": msg, "pair": signal.get("pair"), "direction": signal.get("direction")})
+
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_post("/api/newtrade", api_newtrade)
+    app.router.add_post("/api/opus-signal", api_opus_signal)
     app.router.add_get("/api/share", api_share)
     app.router.add_post("/api/chat", api_chat)
     app.router.add_get("/api/pricing", api_pricing)
