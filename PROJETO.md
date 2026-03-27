@@ -1,49 +1,70 @@
 # SIDQUANT BOT — BRIEFING COMPLETO PARA NOVO CHAT
-# Versão: 1.0 | Data: 24/03/2026
+# Versão: 2.0 | Última atualização: 27/03/2026
 
 ---
 
 ## VISÃO DO PRODUTO
 
 Bot de sinais de cripto para o canal do **sideradog** (@sideradogcripto).
-Gera sinais técnicos automáticos, analisa com Claude Haiku e distribui para
-grupos Telegram segmentados (FREE = teaser / VIP = sinal completo).
+Gera sinais técnicos automáticos, analisa com Claude Haiku e distribui
+exclusivamente para o grupo **Sid Quantt** no tópico **BOT IA** (thread_id=150).
 
 Monetização dupla:
 - **Referral BloFin**: cada usuário que abre conta via link gera comissão de taxa
-- **VIP $39/mês**: acesso ao sinal completo antes de acontecer + dashboard
+- **VIP (a lançar)**: acesso a análises premium + dashboard
 
 ---
 
-## ESTADO ATUAL (24/03/2026)
+## ESTADO ATUAL (27/03/2026)
 
 ### Infraestrutura — PRODUÇÃO ✅
-- **Deploy**: https://bot-blofin.onrender.com (Render Starter $7/mês)
-- **Banco**: PostgreSQL no Render (externo: `dpg-d714okruibrs739no690-a.oregon-postgres.render.com`)
+- **Deploy**: https://bot-blofin.onrender.com (Render free tier — sem sleep via self-ping)
+- **Banco**: PostgreSQL externo no Render (`dpg-d714okruibrs739no690-a.oregon-postgres.render.com`)
 - **GitHub**: https://github.com/caionishizawa/bot-blofin (branch `main`)
 - **Health check**: `/health` → retorna `ok`
-- **Dashboard API**: `/api/status`, `/api/newtrade` (auth: `X-Dashboard-Token`)
+- **Dashboard**: `/` (protegido por `DASHBOARD_SECRET`)
+- **Self-ping**: bot pinga `/health` a cada 10min para evitar sleep do free tier
 
 ### Bot Telegram — FUNCIONANDO ✅
-- **Bot**: @SidQuantBot (token: `8298817575:AAH6BmNi14q...`)
-- **Canal FREE**: SidQuant Free (`-1003753035878`) — teaser pós-fato com CTA
-- **Canal VIP**: Sid Quantt (`-1003848794457`) — sinal completo antes de acontecer
+- **Bot**: @SidQuantBot
+- **Grupo**: Sid Quantt (`-1003848794457`)
+- **Tópico**: BOT IA (`thread_id=150`) — TODAS as mensagens vão aqui
 - **Admin ID**: `1655218530` (@siderapg)
 - **Referral**: https://partner.blofin.com/d/sideradog
 
 ### Pipeline de Sinais — FUNCIONANDO ✅
 ```
 BloFin API → Scanner (12 indicadores) → Confluência (min 3) →
+_register_trade() → salva PostgreSQL →
 Claude Haiku (análise PT-BR) → Chart TradingView dark →
-→ VIP: sinal completo + chart + análise
-→ FREE: resultado pós-fato quando trade fecha
+→ _send() → free_channel_id + thread_id=150 (BOT IA)
 ```
 
-### LLM — Claude Haiku ✅
-- Modelo: `claude-haiku-4-5-20251001`
-- API Key: `sk-ant-api03-cVlWXYbWFAzjnZE9r...` (Anthropic Console)
-- Custo estimado: ~$0.15/mês (5 sinais/dia)
-- Fallback: MLX local → Ollama → análise por código
+### Proteções Anti-Duplicação ✅
+- `_portfolio_sent_date` — portfolio executa 1x/dia no máximo
+- `_morning_sent_date` — bom dia enviado 1x/dia às 08:00 BRT
+- Restart após 09h → não re-agenda portfolio do dia
+- Midnight reset — flags limpos à meia-noite para novo dia
+
+---
+
+## VARIÁVEIS DE AMBIENTE (PRODUÇÃO — RENDER)
+
+```env
+TELEGRAM_BOT_TOKEN=8298817575:AAH6BmNi14q-Fm88n0c-3C1EQE4OnbKFD-E
+TELEGRAM_FREE_CHANNEL_ID=-1003848794457
+TELEGRAM_CHANNEL_ID=-1003848794457
+TELEGRAM_THREAD_ID=150
+TELEGRAM_ADMIN_ID=1655218530
+ADMIN_IDS=1655218530
+TELEGRAM_REF_LINK=https://partner.blofin.com/d/sideradog
+ANTHROPIC_API_KEY=sk-ant-api03-...
+DATABASE_URL=postgresql://sidquant_user:...@dpg-d714okruibrs739no690-a.oregon-postgres.render.com/sidquant
+DASHBOARD_SECRET=sideradog2026!blofin
+CALCULATOR_LINK=          ← preencher quando tiver a URL da calculadora
+LOG_LEVEL=INFO
+# RENDER_EXTERNAL_URL é injetado automaticamente pelo Render
+```
 
 ---
 
@@ -51,96 +72,61 @@ Claude Haiku (análise PT-BR) → Chart TradingView dark →
 
 ```
 bot-blofin/
-├── Dockerfile                  ← build de produção
-├── docker-compose.yml          ← dev local com PostgreSQL
-├── railway.toml                ← config Railway (alternativa)
-├── render.yaml                 ← config Render (produção)
-├── .env                        ← variáveis locais (não commitado)
-├── .env.example                ← template documentado
-├── requirements.txt            ← deps Python
-├── config.yaml                 ← pares, timeframes, filtros
-├── DEVELOPMENT.md              ← roadmap de fases (1-9)
-├── PROJETO.md                  ← este arquivo
-└── src/
-    ├── bot.py                  ← orquestrador principal
-    ├── dashboard.py            ← painel web (aiohttp)
-    ├── modules/
-    │   ├── scanner.py          ← 12 indicadores + confluência
-    │   ├── chart_generator.py  ← charts TradingView dark
-    │   ├── llm_analyst.py      ← Claude Haiku + fallbacks
-    │   ├── tracker.py          ← monitoramento SL/TP em tempo real
-    │   ├── performance.py      ← PostgreSQL/SQLite + métricas PNL
-    │   └── pnl_share.py        ← card visual de resultado
-    └── utils/
-        ├── blofin_api.py       ← REST client + rate limiting + retry
-        └── formatters.py       ← templates de mensagem Telegram
+├── src/
+│   ├── bot.py              ← orquestrador principal
+│   │   ├── _send()         ← SEMPRE envia para free_channel_id + thread_id
+│   │   ├── _reply()        ← reply_text com message_thread_id automático
+│   │   ├── _register_trade()      ← tracker + DB em um só lugar
+│   │   ├── _persist_trade_event() ← salva evento TP/SL no DB
+│   │   ├── _check_gap_events()    ← detecta SL/TP durante downtime
+│   │   └── _health_check_loop()   ← self-ping 10min + alerta 25h
+│   ├── dashboard.py        ← painel web (aiohttp) + botão Opus
+│   ├── modules/
+│   │   ├── scanner.py          ← 12 indicadores + confluência
+│   │   ├── chart_generator.py  ← charts TradingView dark
+│   │   ├── llm_analyst.py      ← Claude Haiku + Opus sob demanda
+│   │   ├── tracker.py          ← ActiveTrade + restore_from_db_row()
+│   │   ├── performance.py      ← PostgreSQL/SQLite + métricas PNL
+│   │   └── pnl_share.py        ← card visual de resultado
+│   └── utils/
+│       ├── blofin_api.py   ← REST client + rate limiting
+│       └── formatters.py   ← templates de mensagem Telegram
 ```
 
 ---
 
-## VARIÁVEIS DE AMBIENTE (PRODUÇÃO)
+## CICLO DE VIDA DE UM TRADE (modular)
 
-```env
-TELEGRAM_BOT_TOKEN=8298817575:AAH6BmNi14q-Fm88n0c-3C1EQE4OnbKFD-E
-TELEGRAM_VIP_CHANNEL_ID=-1003848794457
-TELEGRAM_FREE_CHANNEL_ID=-1003753035878
-TELEGRAM_CHANNEL_ID=-1003848794457
-TELEGRAM_ADMIN_ID=1655218530
-ADMIN_IDS=1655218530
-TELEGRAM_REF_LINK=https://partner.blofin.com/d/sideradog
-ANTHROPIC_API_KEY=sk-ant-api03-cVlWXYbWFAzjnZE9rlX3f5APDt2H8LagxoiSQX739xKh-u65Bid_L_JCCOhYdcpxeOf6cKh3hMh_mfUZ3dkQ9w-oR4wsQA
-DATABASE_URL=postgresql://sidquant_user:JRy3NT1OOrnPTIuIpYRTDtOA5YOWiEG1@dpg-d714okruibrs739no690-a.oregon-postgres.render.com/sidquant
-DASHBOARD_SECRET=sideradog2026!blofin
-LOG_LEVEL=INFO
+```
+1. NOVO SINAL
+   └── _register_trade(signal)
+         ├── tracker.add_trade()   → memória
+         └── db.save_trade()       → PostgreSQL ✅ IMEDIATO
+
+2. MONITORAMENTO (loop 60s)
+   └── _update_trades()
+         ├── api.get_all_mark_prices()  → batch
+         └── trade.check_levels(price)
+               └── se evento → _persist_trade_event()
+                     ├── db.save_trade()  → atualiza status/pnl ✅
+                     └── _send() → notifica BOT IA
+
+3. RESTART / DEPLOY
+   └── startup:
+         ├── db.get_open_trades()         → busca abertos no PostgreSQL
+         ├── tracker.restore_from_db_row() → restaura tp_hit flags
+         └── _check_gap_events()           → candles 1m últimos 30min
+               └── se SL/TP bateu → _persist_trade_event() ✅
 ```
 
 ---
 
-## INDICADORES TÉCNICOS (scanner.py)
+## AGENDA DE SINAIS (horários BRT)
 
-1. EMA 9/21 Cross
-2. EMA Trend (preço vs EMA50)
-3. RSI (14) — zonas oversold/overbought
-4. MACD Cross (12/26/9)
-5. MACD Histogram momentum
-6. Bollinger Bands (20, 2σ)
-7. ATR (14) — volatilidade para SL/TP
-8. ADX (14) — força da tendência
-9. Volume confirmation
-10. Suporte/Resistência por pivot points
-11. Order Block detection
-12. RSI Divergência
-
-**Confluência mínima**: 3 de 12 para emitir sinal
-**Filtros de qualidade**: `min_confidence: 72` | `min_rr: 1.5` | `max_rr: 6.0`
-
----
-
-## SIZING DO TRADE
-
-```
-Risk por trade: 1% da banca
-TP1: fecha 50% da posição
-TP2: fecha 30% da posição
-TP3: fecha 20% da posição (fecha trade)
-SL:  fecha posição restante
-```
-
----
-
-## PARES MONITORADOS (config.yaml)
-
-BTC-USDT, ETH-USDT, SOL-USDT, XRP-USDT, DOGE-USDT,
-ADA-USDT, AVAX-USDT, LINK-USDT, DOT-USDT, MATIC-USDT
-
----
-
-## AGENDA DE SINAIS
-
-Bot agenda 6 missões/dia automaticamente baseado no dia da semana:
-- Timeframes: 15m (scalp) | 1H (intraday) | 4H (swing)
-- Swing days (seg/qua/sex): inclui análise 4H macro semanal
-- Relatório semanal automático (domingo)
+- **08:00** — Mensagem bom dia + preço BTC em tempo real
+- **09:00** — Portfolio scan (4H, 6 pares com hedge direcional)
+- **09:30 → 21:30** — 6 sinais disparados em horários aleatórios ao longo do dia
+- **Domingo 20:00** — Resumo semanal de performance
 
 ---
 
@@ -148,225 +134,103 @@ Bot agenda 6 missões/dia automaticamente baseado no dia da semana:
 
 | Endpoint | Método | Auth | Descrição |
 |---|---|---|---|
-| `/health` | GET | ❌ | Health check |
-| `/api/status` | GET | ❌ | Trades ativos, métricas |
-| `/api/newtrade` | POST | ✅ | Criar sinal manual |
-| `/api/share` | GET | ❌ | Card PNL do último trade |
-| `/api/pricing` | GET | ❌ | Planos e preços |
-| `/api/chat` | POST | ❌ | Análise LLM de sinal |
-| `/api/subscribers` | GET | ✅ | Lista assinantes VIP ativos |
-| `/api/vip/add` | POST | ✅ | Adiciona VIP manual via API |
-| `/api/vip/revoke` | POST | ✅ | Revoga acesso VIP via API |
-| `/webhook/hotmart` | POST | 🔑 | Webhook Hotmart (assinatura HMAC) |
-| `/webhook/stripe` | POST | 🔑 | Webhook Stripe (HMAC-SHA256) |
+| `/health` | GET | ❌ | Health check (usado pelo self-ping) |
+| `/` | GET | ✅ | Dashboard principal |
+| `/api/status` | GET | ✅ | Trades ativos, métricas |
+| `/api/opus-signal` | POST | ✅ | Análise completa com Claude Opus |
+| `/api/subscribers` | GET | ✅ | Lista VIPs ativos |
+| `/webhook/hotmart` | POST | 🔑 | Webhook Hotmart |
+| `/webhook/stripe` | POST | 🔑 | Webhook Stripe |
 | `/webhook/mercadopago` | POST | 🔑 | Webhook Mercado Pago |
-
-**Auth**: Header `X-Dashboard-Token: sideradog2026!blofin`
-
-### Exemplo — criar sinal manual:
-```bash
-curl -X POST https://bot-blofin.onrender.com/api/newtrade \
-  -H "Content-Type: application/json" \
-  -H "X-Dashboard-Token: sideradog2026!blofin" \
-  -d '{
-    "pair": "BTC-USDT",
-    "direction": "LONG",
-    "entry": 87500,
-    "sl": 85800,
-    "tp1": 89200,
-    "tp2": 90800,
-    "tp3": 93000
-  }'
-```
 
 ---
 
-## MODELO DE NEGÓCIO
+## COMANDOS TELEGRAM
 
-```
-Funil:
-  Conteúdo sideradog (resultados pós-fato no FREE)
-    ↓ FOMO "quero pegar antes"
-  Landing page (a construir)
-    ↓ CTA Assinar VIP $39/mês
-  Checkout (PIX / Crypto / Cartão)
-    ↓ Pagamento confirmado
-  Admin libera acesso VIP manualmente (MVP)
-    ↓ Acesso ao grupo Sid Quantt + Dashboard
-
-Receita adicional (passiva):
-  Cada assinante opera na BloFin → taxa de trading
-  → comissão automática para sideradog
-```
-
-**Preço VIP**: $39/mês
-**Breakeven infra**: 1 assinante (R$7 Render)
+| Comando | Acesso | Descrição |
+|---|---|---|
+| `/scan` | Admin | Escanear pares agora |
+| `/trades` | Admin | Ver trades ativos |
+| `/stats` | Admin | Performance semanal/mensal/anual |
+| `/newtrade PAR DIR ENTRY SL TP1 TP2 TP3` | Admin | Trade manual |
+| `/cleartrades` | Admin | Limpar tracker |
+| `/agenda` | Admin | Ver agenda de scans do dia |
+| `/broadcast TEXTO` | Admin | Enviar mensagem para BOT IA |
+| `/macro` | Admin | Análise macro semanal manual |
+| `/ask PERGUNTA` | Todos | Agente educacional (3/dia FREE) |
+| `/mentor` | VIP | Modo conversa livre |
 
 ---
 
 ## FASES CONCLUÍDAS
 
-- ✅ Fase 1: BloFin API wrapper (REST + WebSocket)
-- ✅ Fase 2: Scanner (12 indicadores + confluência)
-- ✅ Fase 3: Chart Generator (TradingView dark theme)
-- ✅ Fase 4: LLM Analyst (Claude Haiku + fallbacks)
-- ✅ Fase 5: Trade Tracker (monitoramento SL/TP real-time)
-- ✅ Fase 6: Telegram Bot (7+ comandos, FREE/VIP channels)
-- ✅ Fase 7: Performance DB (PNL, win rate, equity curve)
-- ✅ Fase 8: Deploy produção (Docker, PostgreSQL, Render, health check)
-- ✅ Fase 9: Agente Educacional (Claude Haiku FREE / Sonnet VIP, /ask, /mentor, knowledge base)
+| Fase | Descrição | Status |
+|---|---|---|
+| 1 | BloFin API wrapper (REST + WebSocket) | ✅ |
+| 2 | Scanner (12 indicadores + confluência) | ✅ |
+| 3 | Chart Generator (TradingView dark theme) | ✅ |
+| 4 | LLM Analyst (Claude Haiku + Opus on-demand) | ✅ |
+| 5 | Trade Tracker (monitoramento SL/TP real-time) | ✅ |
+| 6 | Telegram Bot (comandos + envio tópico BOT IA) | ✅ |
+| 7 | Performance DB (PNL, win rate, equity curve) | ✅ |
+| 8 | Deploy produção (Render, PostgreSQL, health check) | ✅ |
+| 9 | Agente Educacional (/ask, /mentor, knowledge base) | ✅ |
+| 10 | Trade persistence + gap check pós-restart | ✅ |
+| 11 | Self-ping anti-sleep Render free tier | ✅ |
+| 12 | Arquitetura modular (_register_trade, _persist_event) | ✅ |
 
 ---
 
 ## PRÓXIMAS FASES
 
-### Fase 9 — Agente Educacional com Memória ✅ CONCLUÍDO (24/03/2026)
+### Fase 13 — Monetização (PRÓXIMA PRIORIDADE)
+- [ ] Criar canal FREE público separado no Telegram
+- [ ] Landing page: hero + resultados do bot + CTA assinar VIP
+- [ ] Configurar Hotmart ou Stripe para cobrança automática
+- [ ] Webhook → libera VIP automaticamente após pagamento
+- [ ] URL da calculadora de posição → `CALCULATOR_LINK` no Render
 
-Arquivos:
-- `src/agent/agent.py` — Claude Haiku (FREE) / Sonnet (VIP)
-- `src/agent/knowledge_base.md` — base de conhecimento (alimentar continuamente)
-- `src/agent/memory.py` — contador diário + tópicos por usuário
-- Tabela `agent_memory` no PostgreSQL/SQLite
+### Fase 14 — Horários BRT corretos
+- [ ] Portfolio scan às 09:00 BRT (12:00 UTC) — hoje dispara às 06:00 BRT
+- [ ] Slots de envio 09:30–21:30 BRT (hoje são UTC = 06:30–18:30 BRT)
+- [ ] Usar `pytz` para garantir timezone correto no Render
 
-Comandos novos:
-- `/ask pergunta` — FREE: 3/dia | VIP: ilimitado
-- `/mentor` — modo conversa VIP (Sonnet)
-- `/addvip <id>` — admin libera VIP
-- `/removevip <id>` — admin remove VIP
-- `/reloadkb` — admin recarrega knowledge base sem restart
+### Fase 15 — Dashboard público para assinantes
+- [ ] Login do assinante (Telegram ID ou email)
+- [ ] Histórico de sinais pessoal
+- [ ] Performance do bot em tempo real (win rate, PNL acumulado)
+- [ ] Link de afiliado do BloFin personalizado
 
-Para alimentar a base de conhecimento:
-1. Edite `src/agent/knowledge_base.md` com novos setups, aprendizados, exemplos reais
-2. Envie `/reloadkb` no bot (sem precisar reiniciar)
-3. O agente começa a usar o novo conteúdo imediatamente
-
-### Fase 9-NEXT — Enriquecer Knowledge Base (EM ANDAMENTO)
-Bot responde dúvidas de trading baseado no conhecimento do sideradog.
-
-```
-/ask Como valido uma entrada com confluência?
-/mentor → modo conversa livre (VIP only)
-```
-
-Arquitetura:
-- `src/agent/knowledge_base.md` — sideradog documenta seus setups
-- `src/agent/memory.py` — histórico por usuário (nível, dúvidas)
-- FREE: 3 perguntas/dia (Haiku) | VIP: ilimitado (Sonnet)
-
-**Pré-requisito**: sideradog escrever o `knowledge_base.md` com:
-- Setups favoritos e por quê
-- Regras de gestão de risco pessoais
-- Checklist de validação de entrada
-- Erros comuns de iniciante
-
-### Fase 10 — SaaS Completo (FUTURO)
-- Landing page de vendas
-- Checkout automático (Stripe + PIX + Crypto)
-- Auto-liberação VIP via webhook de pagamento
-- Multi-influenciador (cada um com canal e ref próprio)
-- Dashboard do assinante (login, histórico, performance)
+### Fase 16 — Multi-influenciador
+- [ ] Config por canal (cada influenciador tem seu grupo e ref link)
+- [ ] Arquitetura suporta — só falta UI de onboarding
 
 ---
 
-## COMANDOS ÚTEIS
+## BUGS CORRIGIDOS (histórico completo)
 
-```bash
-# Deploy local (dev)
-cd bot-blofin
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env  # preencher tokens
-python src/bot.py
-
-# Enviar sinal manual de teste
-curl -X POST https://bot-blofin.onrender.com/api/newtrade \
-  -H "X-Dashboard-Token: sideradog2026!blofin" \
-  -H "Content-Type: application/json" \
-  -d '{"pair":"ETH-USDT","direction":"LONG","entry":2050,"sl":2000,"tp1":2100,"tp2":2150,"tp3":2250}'
-
-# Ver trades ativos
-curl https://bot-blofin.onrender.com/api/status
-
-# Push para produção
-git add -A && git commit -m "feat: descrição" && git push origin main
-# Render redeploya automaticamente após o push
-```
+| Bug | Arquivo | Fix | Data |
+|---|---|---|---|
+| Qualquer usuário era admin | bot.py | Bloqueia se ADMIN_IDS vazia | 24/03 |
+| TP3 em gap → PNL errado | tracker.py | TP1/TP2 marcados no TP3 | 24/03 |
+| Trade breakeven = derrota | performance.py | `< 0` ao invés de `<= 0` | 24/03 |
+| Porta hardcoded (não subia no Render) | bot.py | Lê PORT env var | 24/03 |
+| Portfolio disparava múltiplas vezes | bot.py | Flag _portfolio_sent_date | 25/03 |
+| Header do portfolio sendo enviado | bot.py | Removido — só sinais | 25/03 |
+| Sinais duplicados pós-restart | bot.py | Bloqueia scan se restart após 09h | 25/03 |
+| Mensagens indo para General (wrong topic) | bot.py | _reply() com message_thread_id | 26/03 |
+| _send() com multi-target confuso | bot.py | Sempre usa free_channel_id + thread_id | 27/03 |
+| Trades perdidos no restart | tracker.py | restore_from_db_row() | 27/03 |
+| SL/TP não detectado durante downtime | bot.py | _check_gap_events() | 27/03 |
+| Bot dormindo após 15min (Render free) | bot.py | Self-ping a cada 10min | 27/03 |
+| add_trade + save_trade espalhados | bot.py | _register_trade() centralizado | 27/03 |
 
 ---
 
-## BUGS CORRIGIDOS NESTA SESSÃO
+## PARA PRÓXIMO CHAT
 
-| Bug | Arquivo | Fix |
-|---|---|---|
-| Qualquer usuário era admin | `bot.py` | Bloqueia se `ADMIN_IDS` vazia |
-| `/api/newtrade` sem auth | `dashboard.py` | Header `X-Dashboard-Token` |
-| TP3 em gap → PNL errado | `tracker.py` | TP1/TP2 marcados no TP3 |
-| Trade breakeven = derrota | `performance.py` | `< 0` ao invés de `<= 0` |
-| Porta hardcoded (não subia no Render) | `bot.py` | Lê `PORT` env var |
-| DATABASE_URL interno não resolvia | `performance.py` | SSL + fallback SQLite |
-| Modelo Opus (caro) | `llm_analyst.py` | Trocado para Haiku |
-
----
-
-## OBJETIVO: AUTOMAÇÃO COMPLETA (estado alvo)
-
-### Pipeline de sinal — 100% automático
-
-```
-[SCHEDULER — 6x/dia]
-    ↓
-BloFin API (OHLCV, orderbook)
-    ↓
-Scanner (12 indicadores) → confluência ≥ 3 → qualidade ≥ 72%
-    ↓
-Claude Haiku → análise PT-BR (contexto, catalisadores, risco)
-    ↓
-Chart Generator → TradingView dark (candles + indicadores + níveis)
-    ↓
-── VIP Telegram: sinal completo (entry, SL, TP1/2/3, análise, chart)
-    ↓
-Trade Tracker (loop 60s): monitora SL/TP em tempo real
-    ↓
-Quando fecha (SL ou TP3):
-    ↓
-── PNL Share: card visual de resultado
-── FREE Telegram: resultado pós-fato + CTA "quero pegar antes → link VIP"
-── Performance DB: salva PNL, win rate, equity curve
-```
-
-### Status de automação hoje (24/03/2026)
-
-| Etapa | Status | Observação |
-|---|---|---|
-| Scanner 12 indicadores | ✅ AUTO | 6 missões/dia agendadas |
-| Claude Haiku análise | ✅ AUTO | ~$0.15/mês |
-| Chart TradingView | ✅ AUTO | dark theme |
-| Sinal VIP Telegram | ✅ AUTO | antes do trade |
-| Trade Tracker SL/TP | ✅ AUTO | loop 60s, preços BloFin |
-| PNL cálculo | ✅ AUTO | TP parcial 50/30/20% |
-| FREE teaser pós-fato | ✅ AUTO | quando trade fecha |
-| Performance DB (PNL) | ✅ AUTO | PostgreSQL prod |
-| Health check admin | ✅ AUTO | alerta se 25h sem sinal |
-| Liberar acesso VIP | ❌ MANUAL | admin faz manualmente |
-| Checkout $39/mês | ❌ PENDENTE | Fase 10 |
-| Landing page vendas | ❌ PENDENTE | Fase 10 |
-| Canal FREE separado | ❌ PENDENTE | criar canal público |
-| BloFin API keys | ❌ PENDENTE | só públicos hoje |
-
-### O que falta para monetizar (prioridade)
-
-1. **Canal FREE público separado** — criar no Telegram, trocar `TELEGRAM_FREE_CHANNEL_ID`
-2. **Landing page** — hero + prova social (resultados do bot) + CTA assinar VIP
-3. **Checkout** — Stripe ou Hotmart para PIX/cartão → webhook → libera VIP auto
-4. **Link de referral BloFin** — garantir que o CTA do FREE aponta para `https://partner.blofin.com/d/sideradog`
-
----
-
-## NOTAS PARA PRÓXIMO CHAT
-
-1. **Sinal já sendo gerado**: bot está em produção, sinais chegando no VIP automaticamente
-2. **Próxima entrega prioritária**: landing page de vendas + checkout para monetizar
-3. **Fase 9 (agente)**: só começa após sideradog escrever o `knowledge_base.md`
-4. **BloFin API keys**: ainda não configuradas (só endpoints públicos ativos)
-5. **Canal FREE**: ainda igual ao VIP — criar canal público separado e trocar o ID
-6. **Multi-influenciador**: arquitetura suporta, implementar na Fase 10
+1. **Deploy pendente**: subir as mudanças de 27/03 para o Render via push
+2. **Calculator link**: quando tiver a URL, adicionar `CALCULATOR_LINK` nas env vars do Render
+3. **Horários BRT**: portfolio scan dispara cedo demais (06:00 BRT) — corrigir na Fase 14
+4. **UptimeRobot**: configurar em uptimerobot.com como backup do self-ping (gratuito, 5min)
+5. **Fase 13**: monetização é o próximo passo mais importante para gerar receita

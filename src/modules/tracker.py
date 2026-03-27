@@ -228,6 +228,23 @@ class TradeTracker:
         self.active_trades[trade.pair] = trade
         return trade
 
+    def restore_from_db_row(self, row: dict) -> ActiveTrade:
+        """Reconstrói um ActiveTrade a partir de uma linha do banco (closed_at IS NULL)."""
+        trade = ActiveTrade(row)  # constrói com os campos base
+        # Restaura estado dos TPs/SL a partir do banco
+        trade.tp1_hit = bool(row.get("tp1_hit", False))
+        trade.tp2_hit = bool(row.get("tp2_hit", False))
+        trade.tp3_hit = bool(row.get("tp3_hit", False))
+        trade.sl_hit  = bool(row.get("sl_hit",  False))
+        status_str    = row.get("status", "open")
+        try:
+            trade.status = TradeStatus(status_str)
+        except ValueError:
+            trade.status = TradeStatus.OPEN
+        trade.opened_at = row.get("opened_at", trade.opened_at)
+        self.active_trades[trade.pair] = trade
+        return trade
+
     def update_price(self, pair: str, price: float) -> str | None:
         trade = self.active_trades.get(pair)
         if trade is None:

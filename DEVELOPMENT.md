@@ -178,6 +178,75 @@ python tests/test_performance.py
 
 ---
 
+### FASE 10 — Envio Exclusivo para Tópico BOT IA ✅ (26-27/03/2026)
+**Entregáveis**:
+- [x] `TELEGRAM_THREAD_ID=150` — tópico BOT IA no grupo Sid Quantt
+- [x] `_get_thread(update)` — helper que retorna thread_id para o canal principal
+- [x] `_reply(update, text)` — substitui reply_text com message_thread_id automático
+- [x] `_reply_photo(update, photo)` — idem para fotos
+- [x] `_send()` refatorado — ignora chat_id, sempre usa free_channel_id + thread_id
+- [x] Removidos todos os `get_enabled_groups()` dos paths de envio de sinais
+- [x] `_scan_cycle()` sem parâmetro chat_id — destino fixo
+- [x] `cmd_newtrade`, `broadcast`, `macro`, `weekly` → `_send()` direto
+
+---
+
+### FASE 11 — Trade Persistence + Gap Check ✅ (27/03/2026)
+**Problema resolvido**: restart/deploy apagava trades da memória; SL/TP batido durante
+downtime nunca era detectado.
+
+**Entregáveis**:
+- [x] `TradeTracker.restore_from_db_row(row)` — reconstrói ActiveTrade do banco
+  preservando tp1_hit, tp2_hit, tp3_hit, sl_hit, status
+- [x] Startup reload: `get_open_trades()` → `restore_from_db_row()` para cada trade
+- [x] `_check_gap_events()` — após restore, busca 30 candles 1m por par
+  - LONG: low <= SL (prioridade se candle vermelho) | high >= TP
+  - SHORT: high >= SL (prioridade se candle verde) | low <= TP
+  - Dispara evento, salva no DB, notifica BOT IA
+- [x] `_register_trade(signal)` — ponto único: tracker.add_trade + db.save_trade
+- [x] `_persist_trade_event(trade, event)` — ponto único: db.save_trade após TP/SL
+
+---
+
+### FASE 12 — Self-Ping Anti-Sleep Render Free Tier ✅ (27/03/2026)
+**Problema resolvido**: Render free tier dorme após 15min sem requisição.
+
+**Entregáveis**:
+- [x] `_health_check_loop()` reformulado:
+  - Pinga `{RENDER_EXTERNAL_URL}/health` a cada 10 minutos
+  - `RENDER_EXTERNAL_URL` injetada automaticamente pelo Render
+  - Falhas silenciosas (logger.debug) — não afeta bot
+  - Alerta admin a cada hora se >25h sem sinal
+- [x] Zero impacto no bot principal (task isolada, try/except completo)
+
+---
+
+### FASE 13 — Monetização (PRÓXIMO) 🚧
+**Branch**: `fase/13-monetizacao`
+**Objetivo**: gerar os primeiros R$ com o bot
+
+**Entregáveis**:
+- [ ] Canal FREE público separado no Telegram (criar + configurar ID)
+- [ ] `CALCULATOR_LINK` env var preenchida no Render
+- [ ] Landing page: hero + resultados reais do bot + CTA
+- [ ] Hotmart ou Stripe configurado para cobrança automática
+- [ ] Webhook → VIP liberado automaticamente após pagamento
+- [ ] Testar fluxo completo: compra → webhook → VIP
+
+---
+
+### FASE 14 — Horários BRT Corretos 🚧
+**Problema**: Render roda em UTC. Portfolio scan dispara às 06:00 BRT (cedo demais).
+Slots de envio são 09:30–21:30 UTC = 06:30–18:30 BRT.
+
+**Entregáveis**:
+- [ ] Usar `pytz` para timezone BRT (`America/Sao_Paulo`)
+- [ ] Portfolio scan → 09:00 BRT = 12:00 UTC
+- [ ] Slots de envio → 09:30–21:30 BRT
+- [ ] Mensagem bom dia → 08:00 BRT (já correto: 11:00 UTC)
+
+---
+
 ### FASE 10 — SaaS Completo (Checkout + Monetização)
 **Branch**: `fase/10-saas`
 **Status**: 🏗️ INFRAESTRUTURA PRONTA — aguardando configuração da plataforma de checkout

@@ -126,13 +126,13 @@ class BloFinBot:
     # ------------------------------------------------------------------
 
     async def _send(self, text: str, photo=None, chat_id: str = None):
-        """Envia mensagem ou foto ao canal configurado."""
-        target = chat_id or self.channel_id
+        """Envia mensagem SEMPRE ao canal free + tópico BOT IA.
+        O parâmetro chat_id é ignorado — toda mensagem vai para free_channel_id."""
+        target = self.free_channel_id or self.channel_id
         if not target:
             logger.warning("TELEGRAM_CHANNEL_ID não configurado — mensagem ignorada")
             return
-        # Usa thread_id quando enviando para o canal principal
-        thread = self.thread_id if (not chat_id or chat_id == self.free_channel_id or chat_id == self.channel_id) else None
+        thread = self.thread_id  # sempre usa thread BOT IA
         try:
             bot: Bot = self._app.bot
             if photo:
@@ -166,11 +166,42 @@ class BloFinBot:
             logger.error(f"Telegram erro ao enviar: {e}")
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _get_thread(self, update) -> Optional[int]:
+        """Retorna thread_id se o comando foi enviado no canal principal."""
+        if update and update.effective_chat:
+            cid = str(update.effective_chat.id)
+            if cid in (self.channel_id, self.free_channel_id):
+                return self.thread_id
+        return None
+
+    async def _reply(self, update, text: str, parse_mode=None, **kwargs):
+        """reply_text forçando thread_id quando no canal principal."""
+        return await update.message.reply_text(
+            text,
+            parse_mode=parse_mode,
+            message_thread_id=self._get_thread(update),
+            **kwargs,
+        )
+
+    async def _reply_photo(self, update, photo, caption: str = "", parse_mode=None, **kwargs):
+        """reply_photo forçando thread_id quando no canal principal."""
+        return await update.message.reply_photo(
+            photo=photo,
+            caption=caption,
+            parse_mode=parse_mode,
+            message_thread_id=self._get_thread(update),
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------
     # Comandos
     # ------------------------------------------------------------------
 
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
+        await self._reply(update, 
             "👋 *SidQuant Bot* — Online!\n\n"
             "📡 *Sinais:*\n"
             "🔍 /scan — Escanear pares agora\n"
@@ -195,12 +226,12 @@ class BloFinBot:
             "👑 /addvip — Liberar acesso VIP a usuário\n"
             "🔄 /reloadkb — Recarregar base de conhecimento\n",
             parse_mode=ParseMode.MARKDOWN,
+            message_thread_id=self._get_thread(update),
         )
 
     async def cmd_scan(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        msg = await update.message.reply_text("🔍 Escaneando pares...")
-        chat_id = str(update.effective_chat.id)
-        count = await self._scan_cycle(chat_id=chat_id)
+        msg = await self._reply(update, "🔍 Escaneando pares...")
+        count = await self._scan_cycle()
         await msg.edit_text(f"✅ Scan concluído — {count} sinal(is) encontrado(s).")
 
     async def cmd_trades(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -215,12 +246,12 @@ class BloFinBot:
             unrealized_pnl=self._unrealized_pnl_usd,
             starting_bankroll=self.bankroll,
         )
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, text, parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_stats(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         stats = await self.db.get_stats_multi_period(bankroll=self.bankroll)
         text = format_stats_message(stats, starting_bankroll=self.bankroll)
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, text, parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_performance(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Breakdown de performance por estilo (scalp / daytrade / swing)."""
@@ -248,15 +279,15 @@ class BloFinBot:
         if best_style:
             lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"🏆 _Melhor avg/trade: *{best_style}*_")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_pnl(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         trades = await self.db.get_recent_trades(limit=50)
         if not trades:
-            await update.message.reply_text("📭 Nenhum trade registrado ainda.")
+            await self._reply(update, "📭 Nenhum trade registrado ainda.")
             return
         buf = create_pnl_chart(trades, self.config)
-        await update.message.reply_photo(photo=buf, caption="📊 *Equity Curve — NPK Sinais*", parse_mode=ParseMode.MARKDOWN)
+        await self._reply_photo(update, buf, caption="📊 *Equity Curve — NPK Sinais*", parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_share(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Gera card de resultado do último trade fechado (ou /share <id>)."""
@@ -269,12 +300,12 @@ class BloFinBot:
             all_trades = await self.db.get_all_trades(limit=200)
             trade = next((t for t in all_trades if t.get("id", "").startswith(trade_id)), None)
             if not trade:
-                await update.message.reply_text(f"❌ Trade `{trade_id}` não encontrado.", parse_mode=ParseMode.MARKDOWN)
+                await self._reply(update, f"❌ Trade `{trade_id}` não encontrado.", parse_mode=ParseMode.MARKDOWN)
                 return
         else:
             recent = await self.db.get_recent_trades(limit=1)
             if not recent:
-                await update.message.reply_text("📭 Nenhum trade fechado ainda.")
+                await self._reply(update, "📭 Nenhum trade fechado ainda.")
                 return
             trade = recent[0]
 
@@ -287,25 +318,21 @@ class BloFinBot:
 
         pair = trade.get("pair", "")
         direction = trade.get("direction", "")
-        await update.message.reply_photo(
-            photo=buf,
-            caption=f"📊 *Resultado — {pair} {direction}*",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await self._reply_photo(update, buf, caption=f"📊 *Resultado — {pair} {direction}*", parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_stop(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         self.running = False
-        await update.message.reply_text("⏹ Scans automáticos pausados.")
+        await self._reply(update, "⏹ Scans automáticos pausados.")
 
     async def cmd_resume(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         self.running = True
-        await update.message.reply_text("▶️ Scans automáticos retomados.")
+        await self._reply(update, "▶️ Scans automáticos retomados.")
 
     async def cmd_enable(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Enable signal broadcasting in this chat/group."""
         chat = update.effective_chat
         await self.db.enable_group(str(chat.id), chat.title or chat.first_name or "")
-        await update.message.reply_text(
+        await self._reply(update, 
             "✅ Sinais *ativados* neste grupo.\n"
             "Os próximos scans serão enviados aqui.",
             parse_mode=ParseMode.MARKDOWN,
@@ -316,7 +343,7 @@ class BloFinBot:
         """Disable signal broadcasting in this chat/group."""
         chat = update.effective_chat
         await self.db.disable_group(str(chat.id))
-        await update.message.reply_text(
+        await self._reply(update, 
             "⏹ Sinais *desativados* neste grupo.",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -326,13 +353,13 @@ class BloFinBot:
         """List all registered groups and their status."""
         groups = await self.db.list_groups()
         if not groups:
-            await update.message.reply_text("Nenhum grupo registrado ainda.")
+            await self._reply(update, "Nenhum grupo registrado ainda.")
             return
         lines = ["📋 *Grupos registrados:*", ""]
         for g in groups:
             status = "✅ ativo" if g["enabled"] else "⏹ inativo"
             lines.append(f"{status} — {g['title'] or 'sem título'}  `{g['chat_id']}`")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     def _is_admin(self, update) -> bool:
         if not self.admin_ids:
@@ -342,21 +369,21 @@ class BloFinBot:
     async def cmd_cleartrades(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Admin: limpa todos os trades ativos do tracker. Uso: /cleartrades"""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
         count = len(self.tracker.active_trades)
         self.tracker.active_trades.clear()
-        await update.message.reply_text(f"✅ {count} trade(s) removido(s) do tracker.")
+        await self._reply(update, f"✅ {count} trade(s) removido(s) do tracker.")
 
     async def cmd_newtrade(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Cria um trade manual. Uso: /newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3"""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
 
         args = ctx.args
         if not args or len(args) < 7:
-            await update.message.reply_text(
+            await self._reply(update, 
                 "📝 *Uso:* `/newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3`\n\n"
                 "Exemplo:\n`/newtrade BTC-USDT LONG 50000 49000 51500 53000 55000`",
                 parse_mode=ParseMode.MARKDOWN,
@@ -372,11 +399,11 @@ class BloFinBot:
             tp2       = float(args[5])
             tp3       = float(args[6])
         except (ValueError, IndexError):
-            await update.message.reply_text("❌ Valores inválidos. Verifique os números.")
+            await self._reply(update, "❌ Valores inválidos. Verifique os números.")
             return
 
         if direction not in ("LONG", "SHORT"):
-            await update.message.reply_text("❌ Direção deve ser LONG ou SHORT.")
+            await self._reply(update, "❌ Direção deve ser LONG ou SHORT.")
             return
 
         rr = round(abs(tp2 - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 0
@@ -401,35 +428,25 @@ class BloFinBot:
             "candles_df": None,
         }
 
-        msg = await update.message.reply_text("📡 Processando trade manual...")
+        msg = await self._reply(update, "📡 Processando trade manual...")
 
-        trade = self.tracker.add_trade(signal)
+        await self._register_trade(signal)
         analysis = await analyze_signal(signal, mode="scalp")
         from modules.chart_generator import create_chart
         chart_buf = create_chart(signal, self.config)
         text = format_signal_message(signal, analysis=analysis, ref_link=self.ref_link, mode="manual")
-        await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
-
-        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-        if self.channel_id and self.channel_id not in targets:
-            targets.append(self.channel_id)
-
-        sent = 0
-        for target in targets:
-            await self._send(text, photo=chart_buf, chat_id=target)
-            sent += 1
-
-        await msg.edit_text(f"✅ Trade manual enviado para {sent} grupo(s).")
+        await self._send(text, photo=chart_buf)
+        await msg.edit_text("✅ Trade manual enviado para BOT IA.")
 
     async def cmd_agenda(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Mostra a agenda de scans do dia."""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
 
         schedule = self._today_schedule
         if not schedule:
-            await update.message.reply_text("📅 Nenhuma agenda gerada ainda. O bot gera ao iniciar.")
+            await self._reply(update, "📅 Nenhuma agenda gerada ainda. O bot gera ao iniciar.")
             return
 
         now = datetime.now()
@@ -439,38 +456,30 @@ class BloFinBot:
             lines.append(f"{status} `{t.strftime('%H:%M')}`  _BRT_")
         lines.append("")
         lines.append(f"_Bot está {'▶️ rodando' if self.running else '⏹ pausado'}_")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_macro(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Dispara manualmente a análise macro semanal."""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
-        msg = await update.message.reply_text("📊 Gerando análise macro semanal...")
+        msg = await self._reply(update, "📊 Gerando análise macro semanal...")
         await self._send_weekly_macro()
         await msg.edit_text("✅ Análise macro enviada.")
 
     async def cmd_broadcast(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Envia mensagem personalizada para todos os grupos. Uso: /broadcast TEXTO"""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
 
         if not ctx.args:
-            await update.message.reply_text("Uso: `/broadcast sua mensagem aqui`", parse_mode=ParseMode.MARKDOWN)
+            await self._reply(update, "Uso: `/broadcast sua mensagem aqui`", parse_mode=ParseMode.MARKDOWN)
             return
 
         text = " ".join(ctx.args)
-        targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-        if self.channel_id and self.channel_id not in targets:
-            targets.append(self.channel_id)
-
-        sent = 0
-        for target in targets:
-            await self._send(text, chat_id=target)
-            sent += 1
-
-        await update.message.reply_text(f"✅ Mensagem enviada para {sent} grupo(s).")
+        await self._send(text)
+        await self._reply(update, "✅ Mensagem enviada para BOT IA.")
 
     # ------------------------------------------------------------------
     # Agente Educacional — /ask e /mentor
@@ -505,7 +514,7 @@ class BloFinBot:
                 "Você tem acesso VIP permanente configurado diretamente no servidor.\n"
                 "Todos os recursos estão disponíveis sem prazo de validade."
             )
-            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+            await self._reply(update, msg, parse_mode=ParseMode.MARKDOWN)
             return
 
         if is_vip:
@@ -543,7 +552,7 @@ class BloFinBot:
                 f"👉 *Assinar VIP*: {ref}"
             )
 
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, msg, parse_mode=ParseMode.MARKDOWN)
 
     async def cmd_ask(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Responde dúvida de trading. FREE: 3/dia | VIP: ilimitado."""
@@ -551,7 +560,7 @@ class BloFinBot:
         question = " ".join(ctx.args) if ctx.args else ""
 
         if not question:
-            await update.message.reply_text(
+            await self._reply(update, 
                 "🤖 *SidAgent* — Agente educacional do sideradog\n\n"
                 "Use: `/ask sua pergunta aqui`\n\n"
                 "Exemplos:\n"
@@ -569,7 +578,7 @@ class BloFinBot:
         if not is_vip:
             count_today = await get_ask_count_today(self.db._backend, user_id)
             if count_today >= FREE_DAILY_LIMIT:
-                await update.message.reply_text(
+                await self._reply(update, 
                     f"⏳ Você atingiu o limite de *{FREE_DAILY_LIMIT} perguntas/dia* no plano FREE.\n\n"
                     f"Quer respostas ilimitadas + mais detalhadas?\n"
                     f"👉 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}",
@@ -578,7 +587,7 @@ class BloFinBot:
                 return
 
         # Feedback de carregamento
-        msg = await update.message.reply_text("🤖 Pensando...")
+        msg = await self._reply(update, "🤖 Pensando...")
 
         # Coleta contexto
         user_memory = await get_user_memory(self.db._backend, user_id)
@@ -609,7 +618,7 @@ class BloFinBot:
         user_id = str(update.effective_user.id)
 
         if not await self._is_vip_async(user_id):
-            await update.message.reply_text(
+            await self._reply(update, 
                 "⭐ O modo `/mentor` é exclusivo para assinantes *VIP*.\n\n"
                 f"👉 Acesse o VIP: {self.ref_link or 'https://partner.blofin.com/d/sideradog'}\n\n"
                 "No plano FREE, use `/ask sua pergunta` para até 3 perguntas/dia.",
@@ -617,7 +626,7 @@ class BloFinBot:
             )
             return
 
-        await update.message.reply_text(
+        await self._reply(update, 
             "🧑‍🏫 *Modo Mentor Ativo* ⭐\n\n"
             "Me faz qualquer pergunta sobre trading, setups, gestão de risco, "
             "psicologia ou os sinais do bot.\n\n"
@@ -629,35 +638,35 @@ class BloFinBot:
     async def cmd_reloadkb(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Admin: recarrega a knowledge base do agente sem reiniciar o bot."""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
         reload_knowledge_base()
-        await update.message.reply_text("✅ Knowledge base recarregada com sucesso.")
+        await self._reply(update, "✅ Knowledge base recarregada com sucesso.")
 
     async def cmd_addvip(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Admin: adiciona usuário à lista VIP em memória. Uso: /addvip <telegram_id>"""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
         if not ctx.args:
-            await update.message.reply_text("Uso: `/addvip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
+            await self._reply(update, "Uso: `/addvip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
             return
         vip_id = ctx.args[0].strip()
         self._vip_ids.add(vip_id)
-        await update.message.reply_text(f"✅ Usuário `{vip_id}` adicionado ao VIP.", parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, f"✅ Usuário `{vip_id}` adicionado ao VIP.", parse_mode=ParseMode.MARKDOWN)
         logger.info(f"VIP adicionado: {vip_id}")
 
     async def cmd_removevip(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Admin: remove usuário do VIP. Uso: /removevip <telegram_id>"""
         if not self._is_admin(update):
-            await update.message.reply_text("⛔ Acesso restrito.")
+            await self._reply(update, "⛔ Acesso restrito.")
             return
         if not ctx.args:
-            await update.message.reply_text("Uso: `/removevip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
+            await self._reply(update, "Uso: `/removevip <telegram_id>`", parse_mode=ParseMode.MARKDOWN)
             return
         vip_id = ctx.args[0].strip()
         self._vip_ids.discard(vip_id)
-        await update.message.reply_text(f"✅ Usuário `{vip_id}` removido do VIP.", parse_mode=ParseMode.MARKDOWN)
+        await self._reply(update, f"✅ Usuário `{vip_id}` removido do VIP.", parse_mode=ParseMode.MARKDOWN)
         logger.info(f"VIP removido: {vip_id}")
 
     async def on_bot_added(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -717,10 +726,8 @@ class BloFinBot:
                 f"Fique atento."
             )
 
-            target = self.free_channel_id or self.channel_id
-            if target:
-                await self._send(msg, chat_id=target)
-                logger.info(f"Mensagem de bom dia enviada — BTC {price_str}")
+            await self._send(msg)
+            logger.info(f"Mensagem de bom dia enviada — BTC {price_str}")
 
         except Exception as e:
             logger.error(f"Erro ao enviar mensagem de bom dia: {e}")
@@ -821,12 +828,7 @@ class BloFinBot:
                 ref_link=self.ref_link,
             )
 
-            targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-            if self.channel_id and self.channel_id not in targets:
-                targets.append(self.channel_id)
-            for target in targets:
-                await self._send(msg, chat_id=target)
-
+            await self._send(msg)
             logger.info(f"Análise macro enviada — viés {bias}, {len(conviction_signals)} convicção(ões)")
 
         except Exception as e:
@@ -912,6 +914,22 @@ class BloFinBot:
             times.append(datetime.combine(today, _time(h, m)))
         return times
 
+    async def _register_trade(self, signal: dict) -> "ActiveTrade":
+        """Adiciona trade ao tracker E salva no DB atomicamente.
+        Ponto único de entrada para todo novo trade — garante persistência."""
+        trade = self.tracker.add_trade(signal)
+        await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
+        logger.info(f"[DB] Trade registrado: {signal['pair']} {signal['direction']} entry={signal['entry']}")
+        return trade
+
+    async def _persist_trade_event(self, trade: "ActiveTrade", event: str):
+        """Salva estado atualizado do trade após evento (TP/SL) no DB."""
+        trade_dict = trade.to_dict()
+        pnl_usd = round(PerformanceDB.calc_pnl_usd(trade_dict, self.bankroll), 2)
+        await self.db.save_trade(trade_dict, bankroll=self.bankroll)
+        logger.info(f"[DB] Evento {event} — {trade.pair} | PNL: ${pnl_usd:+.2f}")
+        return trade_dict, pnl_usd
+
     async def _send_pending_signal(self, pending: dict):
         """Envia um sinal individual da fila de portfolio."""
         signal   = pending["signal"]
@@ -923,30 +941,21 @@ class BloFinBot:
         msg       = format_signal_message(signal, analysis=analysis,
                                           ref_link=self.ref_link, mode=llm_mode)
 
-        # Envia apenas ao canal free
-        targets = []
-        if self.free_channel_id:
-            targets.append(self.free_channel_id)
-        elif self.channel_id:
-            targets.append(self.channel_id)
-
         logger.info(
             f"[PORTFOLIO AGENDADO] {signal['pair']} {signal['direction']} "
             f"conf={signal.get('confidence')}% rr={signal.get('rr_ratio')} "
             f"tp_count={signal.get('tp_count')}"
         )
 
-        for target in targets:
-            await self._send(msg, photo=chart_buf, chat_id=target)
-
+        await self._register_trade(signal)
+        await self._send(msg, photo=chart_buf)
         self._last_signal_at = datetime.now(timezone.utc)
-        await self.db.save_trade(self.tracker.add_trade(signal).to_dict(), bankroll=self.bankroll)
 
-    async def _scan_cycle(self, mission: dict = None, chat_id: str = None) -> int:
-        """Escaneia pares e envia sinais. mission = {bar, mode, max_signals}.
+    async def _scan_cycle(self, mission: dict = None) -> int:
+        """Escaneia pares e envia sinais SEMPRE para BOT IA. mission = {bar, mode, max_signals}.
 
         Modos:
-          portfolio — seleciona 4+2 ou 2+4 com hedge e envia header do dia
+          portfolio — seleciona 4+2 ou 2+4 com hedge e agenda sinais ao longo do dia
           swing     — seleciona melhores sinais do 4H, RR≥2.0
           scalp     — seleciona sinais rápidos do 1H/15m
         """
@@ -1012,16 +1021,6 @@ class BloFinBot:
         except Exception:
             sizing_stats = {}
 
-        # Envio automático apenas ao canal free; chat_id só para comandos manuais
-        targets = []
-        if chat_id:
-            targets.append(chat_id)
-        else:
-            if self.free_channel_id:
-                targets.append(self.free_channel_id)
-            elif self.channel_id:
-                targets.append(self.channel_id)
-
         _SCALP_BARS = {"1m", "3m", "5m", "15m", "30m"}
         _SWING_BARS = {"4H", "1D", "3D", "1W"}
 
@@ -1083,8 +1082,7 @@ class BloFinBot:
                 signal["sizing_info"] = sizing_reason
             signal["bankroll"] = self.bankroll
 
-            trade      = self.tracker.add_trade(signal)
-            await self.db.save_trade(trade.to_dict(), bankroll=self.bankroll)
+            await self._register_trade(signal)
             analysis   = await analyze_signal(signal, mode=llm_mode)
             chart_buf  = create_chart(signal, self.config)
             msg        = format_signal_message(signal, analysis=analysis,
@@ -1097,13 +1095,100 @@ class BloFinBot:
                 f"risk={signal.get('risk_pct')}% bar={bar}"
             )
 
-            for target in targets:
-                await self._send(msg, photo=chart_buf, chat_id=target)
-
+            await self._send(msg, photo=chart_buf)
             self._last_signal_at = datetime.now(timezone.utc)
             await asyncio.sleep(2)  # pausa entre sinais do portfolio
 
         return len(selected)
+
+    async def _check_gap_events(self):
+        """Após restart, verifica candles 1m recentes para detectar SL/TP que bateram
+        enquanto o bot estava offline. Resolve o 'gap problem' de downtime.
+
+        Lógica por candle (1m, últimos 30 min):
+          - LONG: low <= SL → SL_HIT | high >= TP → TP_HIT
+          - SHORT: high >= SL → SL_HIT | low <= TP → TP_HIT
+          - Se candle é vermelho (close < open) → SL tem prioridade sobre TP
+          - Se candle é verde (close > open) → TP tem prioridade
+        """
+        if not self.tracker.active_trades:
+            return
+
+        logger.info(f"[GAP CHECK] Verificando {len(self.tracker.active_trades)} trade(s) pós-restart...")
+
+        for pair, trade in list(self.tracker.active_trades.items()):
+            try:
+                candles = await self.api.get_candles(pair, bar="1m", limit=30)
+                if not candles:
+                    continue
+
+                event_fired = None
+                event_price = None
+
+                for candle in candles:
+                    # Formato BloFin: [ts, open, high, low, close, ...]
+                    try:
+                        c_open  = float(candle[1])
+                        c_high  = float(candle[2])
+                        c_low   = float(candle[3])
+                        c_close = float(candle[4])
+                    except (IndexError, ValueError):
+                        continue
+
+                    is_red = c_close < c_open  # candle vermelho → SL tem prioridade
+
+                    if trade.direction == "LONG":
+                        sl_touched = c_low  <= trade.stop_loss
+                        tp1_touch  = not trade.tp1_hit and trade.tp1 > 0 and c_high >= trade.tp1
+                        tp2_touch  = not trade.tp2_hit and trade.tp2 > 0 and c_high >= trade.tp2
+                        tp3_touch  = not trade.tp3_hit and trade.tp3 > 0 and c_high >= trade.tp3
+
+                        if is_red and sl_touched:
+                            event = trade.check_levels(trade.stop_loss)
+                        elif tp3_touch:
+                            event = trade.check_levels(trade.tp3)
+                        elif tp2_touch:
+                            event = trade.check_levels(trade.tp2)
+                        elif tp1_touch:
+                            event = trade.check_levels(trade.tp1)
+                        elif sl_touched:
+                            event = trade.check_levels(trade.stop_loss)
+                        else:
+                            event = None
+                    else:  # SHORT
+                        sl_touched = c_high >= trade.stop_loss
+                        tp1_touch  = not trade.tp1_hit and trade.tp1 > 0 and c_low <= trade.tp1
+                        tp2_touch  = not trade.tp2_hit and trade.tp2 > 0 and c_low <= trade.tp2
+                        tp3_touch  = not trade.tp3_hit and trade.tp3 > 0 and c_low <= trade.tp3
+
+                        if not is_red and sl_touched:
+                            event = trade.check_levels(trade.stop_loss)
+                        elif tp3_touch:
+                            event = trade.check_levels(trade.tp3)
+                        elif tp2_touch:
+                            event = trade.check_levels(trade.tp2)
+                        elif tp1_touch:
+                            event = trade.check_levels(trade.tp1)
+                        elif sl_touched:
+                            event = trade.check_levels(trade.stop_loss)
+                        else:
+                            event = None
+
+                    if event:
+                        event_fired = event
+                        trade_dict = trade.to_dict()
+                        pnl_usd = round(PerformanceDB.calc_pnl_usd(trade_dict, self.bankroll), 2)
+                        logger.info(f"[GAP {event}] {pair} detectado nos candles pós-restart | PNL: ${pnl_usd:+.2f}")
+                        msg = format_update_message(pair, event, trade_dict, bankroll=self.bankroll)
+                        await self._send(msg)
+                        await self.db.save_trade(trade_dict, bankroll=self.bankroll)
+
+                        if event == "SL_HIT" or event == trade.final_tp:
+                            self.tracker.remove_trade(pair)
+                            break  # trade encerrado, para de processar candles
+
+            except Exception as e:
+                logger.error(f"[GAP CHECK] Erro em {pair}: {e}")
 
     async def _update_trades(self):
         """Verifica SL/TP nos trades ativos — uma chamada batch à API a cada 5 min.
@@ -1147,16 +1232,11 @@ class BloFinBot:
                     continue
 
                 # ── Evento confirmado: TP ou SL bateu ─────────────────────
-                trade_dict = trade.to_dict()
-                pnl_usd = round(PerformanceDB.calc_pnl_usd(trade_dict, self.bankroll), 2)
-                logger.info(
-                    f"[{event}] {pair} @ {price:.4f} | "
-                    f"PNL: ${pnl_usd:+.2f} ({trade_dict['pnl_pct']:+.2f}%)"
-                )
+                trade_dict, pnl_usd = await self._persist_trade_event(trade, event)
+                logger.info(f"[{event}] {pair} @ {price:.4f} | PNL: ${pnl_usd:+.2f} ({trade_dict['pnl_pct']:+.2f}%)")
 
                 msg = format_update_message(pair, event, trade_dict, bankroll=self.bankroll)
                 await self._send(msg)
-                await self.db.save_trade(trade_dict, bankroll=self.bankroll)
 
                 events_fired.append(event)
 
@@ -1259,11 +1339,7 @@ class BloFinBot:
                         try:
                             stats = await self.db.get_stats(days=7, bankroll=self.bankroll)
                             recap = format_weekly_recap(stats, starting_bankroll=self.bankroll)
-                            targets = [g["chat_id"] for g in await self.db.get_enabled_groups()]
-                            if self.channel_id and self.channel_id not in targets:
-                                targets.append(self.channel_id)
-                            for target in targets:
-                                await self._send(recap, chat_id=target)
+                            await self._send(recap)
                             logger.info("Resumo semanal enviado.")
                         except Exception as e:
                             logger.error(f"Erro ao enviar resumo semanal: {e}")
@@ -1326,23 +1402,44 @@ class BloFinBot:
     # ------------------------------------------------------------------
 
     async def _health_check_loop(self):
-        """Alert admin if no signal has been sent in 25+ hours."""
-        await asyncio.sleep(3600)  # first check after 1h
+        """Duas funções:
+        1. Auto-ping a cada 10 min para evitar sleep no Render free tier
+        2. Alerta admin se nenhum sinal foi enviado em 25h+
+        """
+        self_url = os.getenv("RENDER_EXTERNAL_URL", "")  # Render injeta automaticamente
+        ping_interval = 10 * 60  # 10 minutos
+
+        await asyncio.sleep(60)  # aguarda bot inicializar antes do primeiro ping
+
+        tick = 0
         while self.running:
-            try:
-                if self._last_signal_at:
-                    hours_since = (datetime.now(timezone.utc) - self._last_signal_at).total_seconds() / 3600
-                    if hours_since > 25 and self.admin_id:
-                        bot = self._app.bot if hasattr(self, "_app") else None
-                        if bot:
-                            await bot.send_message(
-                                chat_id=self.admin_id,
-                                text=f"⚠️ *BloFin Bot — Alerta*\n\nNenhum sinal enviado há {hours_since:.0f}h.\nVerifique se o bot está rodando corretamente.",
-                                parse_mode="Markdown",
-                            )
-            except Exception as e:
-                logger.error("Health check error: %s", e)
-            await asyncio.sleep(3600)  # check every hour
+            # ── Auto-ping para manter o serviço acordado ────────────────
+            if self_url:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(f"{self_url}/health", timeout=aiohttp.ClientTimeout(total=10)) as r:
+                            logger.debug(f"Self-ping: {r.status}")
+                except Exception as e:
+                    logger.debug(f"Self-ping falhou (normal se offline): {e}")
+
+            # ── Alerta admin se sem sinais por 25h (a cada 1h = 6 ticks) ─
+            tick += 1
+            if tick % 6 == 0:
+                try:
+                    if self._last_signal_at:
+                        hours_since = (datetime.now(timezone.utc) - self._last_signal_at).total_seconds() / 3600
+                        if hours_since > 25 and self.admin_id:
+                            bot = self._app.bot if hasattr(self, "_app") else None
+                            if bot:
+                                await bot.send_message(
+                                    chat_id=self.admin_id,
+                                    text=f"⚠️ *SidQuant Bot — Alerta*\n\nNenhum sinal enviado há {hours_since:.0f}h.\nVerifique se o bot está rodando.",
+                                    parse_mode="Markdown",
+                                )
+                except Exception as e:
+                    logger.error("Health check error: %s", e)
+
+            await asyncio.sleep(ping_interval)
 
     # ------------------------------------------------------------------
     # Inicialização
@@ -1365,21 +1462,27 @@ class BloFinBot:
         except Exception as e:
             logger.warning(f"Erro ao carregar PNL histórico: {e}")
 
-        # Recarrega trades abertos do DB (não fechados)
+        # Recarrega trades abertos do DB preservando estado (tp1_hit, tp2_hit etc.)
         try:
             import json as _json
             open_trades = await self.db.get_open_trades()
             for t in open_trades:
                 if isinstance(t.get("reasons"), str):
-                    t["reasons"] = _json.loads(t["reasons"])
-                self.tracker.add_trade(t)
+                    try:
+                        t["reasons"] = _json.loads(t["reasons"])
+                    except Exception:
+                        t["reasons"] = []
+                self.tracker.restore_from_db_row(t)
             if open_trades:
-                logger.info(f"{len(open_trades)} trade(s) aberto(s) recarregado(s) do DB")
+                pairs = ", ".join(t["pair"] for t in open_trades)
+                logger.info(f"✅ {len(open_trades)} trade(s) recarregado(s) do DB: {pairs}")
+            else:
+                logger.info("Nenhum trade aberto no DB para recarregar.")
         except Exception as e:
             logger.warning(f"Erro ao recarregar trades abertos: {e}")
 
         self._app = Application.builder().token(self.token).build()
-        self.payment_manager.set_bot_app(self._app)  # injeta para envio de mensagens
+        self.payment_manager.set_bot_app(self._app)
 
         self._app.add_handler(CommandHandler("start", self.cmd_start))
         self._app.add_handler(CommandHandler("scan", self.cmd_scan))
@@ -1423,6 +1526,9 @@ class BloFinBot:
             dash_site = aiohttp_web.TCPSite(dash_runner, "0.0.0.0", dashboard_port)
             await dash_site.start()
             logger.info(f"Dashboard rodando em http://localhost:{dashboard_port}")
+
+            # Verifica se SL/TP bateu durante o downtime antes de iniciar o loop
+            await self._check_gap_events()
 
             bg_task = asyncio.create_task(self._background_loop())
             hc_task = asyncio.create_task(self._health_check_loop())
