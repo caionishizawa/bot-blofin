@@ -419,6 +419,119 @@ class BloFinBot:
         else:
             await msg.edit_text(f"⚠️ Nenhum sinal válido encontrado no {bar}. Tente outro timeframe.")
 
+    async def cmd_signal(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: força sinal num par específico. Uso: /signal PAR [TIMEFRAME]
+        Exemplo: /signal HYPE-USDT 4H
+        Gera o trade com níveis baseados em ATR + indicadores e envia com gráfico + análise."""
+        if not self._is_admin(update):
+            await self._reply(update, "⛔ Acesso restrito.")
+            return
+        args = ctx.args
+        if not args:
+            await self._reply(update, "📝 Uso: `/signal PAR [TIMEFRAME]`\nEx: `/signal HYPE-USDT 4H`",
+                              parse_mode=ParseMode.MARKDOWN)
+            return
+
+        pair = args[0].upper()
+        bar  = args[1].upper() if len(args) > 1 else "4H"
+        mode = "scalp" if bar in ("15m", "30m", "1H") else "swing"
+
+        msg = await self._reply(update, f"🔍 Analisando {pair} {bar}...")
+
+        try:
+            from utils.indicators import candles_to_df, add_all_indicators, detect_signal
+            from utils.blofin_api import BloFinAPI as _API
+            from modules.position_sizer import calculate_risk_pct
+
+            candles = await self.api.get_candles(pair, bar=bar, limit=100)
+            if not candles:
+                await msg.edit_text(f"⚠️ Par {pair} não encontrado na BloFin.")
+                return
+
+            df = candles_to_df(candles)
+            df = add_all_indicators(df)
+
+            # Tenta sinal automático primeiro
+            scalp = bar in ("15m", "30m", "1H")
+            signal = detect_signal(df, scalp=scalp, bar=bar)
+
+            # Se não detectou, monta sinal manual com ATR
+            if not signal:
+                c     = df.iloc[-1]
+                price = float(c["close"])
+                atr   = float(c["atr"])
+                rsi   = float(c["rsi"])
+                ema9  = float(c["ema9"])
+                ema21 = float(c["ema21"])
+                macd_hist = float(c["macd_hist"])
+
+                # Viés: MACD hist positivo OU RSI < 50 e acima EMA9 → LONG
+                direction = "LONG" if (macd_hist > 0 or (rsi < 50 and price >= ema9)) else "SHORT"
+
+                if direction == "LONG":
+                    entry    = round(price, 4)
+                    sl       = round(price - 1.5 * atr, 4)
+                    tp1      = round(price + 1.0 * atr, 4)
+                    tp2      = round(price + 2.0 * atr, 4)
+                    tp3      = round(price + 3.0 * atr, 4)
+                else:
+                    entry    = round(price, 4)
+                    sl       = round(price + 1.5 * atr, 4)
+                    tp1      = round(price - 1.0 * atr, 4)
+                    tp2      = round(price - 2.0 * atr, 4)
+                    tp3      = round(price - 3.0 * atr, 4)
+
+                sl_dist = abs(entry - sl)
+                rr      = round(abs(tp2 - entry) / sl_dist, 2) if sl_dist > 0 else 2.0
+
+                signal = {
+                    "pair":       pair,
+                    "direction":  direction,
+                    "entry":      entry,
+                    "stop_loss":  sl,
+                    "tp1":        tp1,
+                    "tp2":        tp2,
+                    "tp3":        tp3,
+                    "rr_ratio":   rr,
+                    "confidence": 60,
+                    "score":      6.0,
+                    "bar":        bar,
+                    "tp_count":   3,
+                    "reasons":    [f"RSI {rsi:.0f}", f"MACD hist {macd_hist:+.3f}",
+                                   f"EMA9 {ema9:.2f}", f"ATR {atr:.3f}"],
+                }
+            else:
+                signal["pair"] = pair
+
+            # Sizing e metadados
+            try:
+                sizing_stats = await self.db.get_sizing_stats(bankroll=self.bankroll)
+            except Exception:
+                sizing_stats = {}
+            risk_pct, sizing_reason = calculate_risk_pct(signal, sizing_stats)
+            signal["risk_pct"]    = risk_pct
+            signal["sizing_info"] = sizing_reason
+            signal["bankroll"]    = self.bankroll
+            signal["trade_style"] = mode
+            signal["trade_mode"]  = mode
+            signal["setup_type"]  = self._classify_setup(signal, mode)
+            signal["calc_link"]   = self.calc_link
+
+            # Envia com gráfico + análise LLM
+            await self._register_trade(signal)
+            analysis  = await analyze_signal(signal, mode=mode)
+            chart_buf = create_chart(signal, self.config)
+            text      = format_signal_message(signal, analysis=analysis,
+                                              ref_link=self.ref_link, mode=mode)
+
+            await self._send(text, photo=chart_buf)
+            self._last_signal_at = datetime.now(timezone.utc)
+            await msg.edit_text(f"✅ Sinal {pair} {bar} enviado!")
+
+        except Exception as e:
+            logger.error(f"Erro em /signal {pair} {bar}: {e}")
+            await msg.edit_text(f"❌ Erro ao gerar sinal: {e}")
+
     async def cmd_newtrade(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Cria um trade manual. Uso: /newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3"""
         if not self._is_admin(update):
@@ -1569,6 +1682,7 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("cleartrades", self.cmd_cleartrades))
         self._app.add_handler(CommandHandler("resetall", self.cmd_resetall))
         self._app.add_handler(CommandHandler("forcescan", self.cmd_forcescan))
+        self._app.add_handler(CommandHandler("signal", self.cmd_signal))
         self._app.add_handler(CommandHandler("newtrade", self.cmd_newtrade))
         self._app.add_handler(CommandHandler("agenda", self.cmd_agenda))
         self._app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
