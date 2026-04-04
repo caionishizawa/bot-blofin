@@ -349,56 +349,44 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
     risk_pct   = float(signal.get("risk_pct", 2.0))
     ref_link   = signal.get("ref_link", ref_link)
 
-    dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    arrow     = "↑" if direction == "LONG" else "↓"
+    is_long   = direction == "LONG"
+    dir_emoji = "🟢" if is_long else "🔴"
+    dir_label = "COMPRA" if is_long else "VENDA"
 
     def _chg(price):
         if not entry: return 0.0
-        return ((price - entry) / entry * 100) if direction == "LONG" else ((entry - price) / entry * 100)
+        return ((price - entry) / entry * 100) if is_long else ((entry - price) / entry * 100)
 
-    sl_dist = abs(entry - sl)
-    splits  = TP_SIZING.get(tp_count, TP_SIZING[3])
-    s1 = splits.get("tp1", 35) / 100
-    s2 = splits.get("tp2", 45) / 100 if tp2 else 0
-    s3 = splits.get("tp3", 20) / 100 if tp3 else 0
-    rr = round(
-        abs(tp1 - entry) / sl_dist * s1 +
-        (abs(tp2 - entry) / sl_dist * s2 if tp2 else 0) +
-        (abs(tp3 - entry) / sl_dist * s3 if tp3 else 0), 1
-    ) if sl_dist > 0 and tp1 else signal.get("rr_ratio", 0)
+    rr = signal.get("rr_ratio", 2.3)
 
     now = datetime.now(timezone.utc).strftime("%d/%m · %H:%M")
 
-    # Análise: limpa markdown, pega só as primeiras 2 frases
+    # Análise: extrai só a primeira frase útil (sem numeração, sem markdown)
     analysis_clean = ""
     if analysis:
         import re
-        txt = re.sub(r'[*_`\[\]]', '', analysis).strip()
-        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', txt) if s.strip()]
-        analysis_clean = " ".join(sentences[:2])
-        if len(analysis_clean) > 280:
-            analysis_clean = analysis_clean[:277] + "..."
+        txt = re.sub(r'^\s*\d+[\.\)]\s*', '', analysis, flags=re.MULTILINE)
+        txt = re.sub(r'[*_`\[\]#]', '', txt).strip()
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', txt) if len(s.strip()) > 20]
+        if sentences:
+            analysis_clean = sentences[0]
+            if len(analysis_clean) > 220:
+                analysis_clean = analysis_clean[:217] + "..."
 
-    # TP lines
+    # TP lines — linguagem simples para qualquer pessoa entender
+    tp_icons = ["✅", "✅✅", "🏆"]
+    tp_labels = ["Alvo 1", "Alvo 2", "Alvo 3"]
+    tp_vals = [tp1, tp2, tp3]
     tp_lines = []
-    if tp_count == 1:
-        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
-    elif tp_count == 2:
-        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
-        if tp2:
-            tp_lines.append(f"🏆 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_")
-    else:
-        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
-        if tp2:
-            tp_lines.append(f"🎯 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_")
-        if tp3:
-            tp_lines.append(f"🏆 *A3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_")
+    for i, (tv, icon, lbl) in enumerate(zip(tp_vals[:tp_count], tp_icons, tp_labels)):
+        if tv:
+            tp_lines.append(f"{icon} *{lbl}*  `{_fmt_price(tv)}`  _({_chg(tv):+.1f}%)_")
 
     lines = [
-        f"{dir_emoji} *{pair}* — *{direction} {arrow}*  `{bar}`",
+        f"{dir_emoji} *{pair}*  ·  *{dir_label}*  `{bar}`",
         f"",
-        f"📍 Entrada  `{_fmt_price(entry)}`",
-        f"🛑 Stop      `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
+        f"🔵 Entra em  `{_fmt_price(entry)}`",
+        f"🔴 Zera em    `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
         *tp_lines,
         f"",
         f"⚖️ R:R *{rr}:1*  ·  Risco *{risk_pct:.0f}% da banca*",

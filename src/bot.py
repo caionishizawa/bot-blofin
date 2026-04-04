@@ -471,18 +471,17 @@ class BloFinBot:
                 # Viés: MACD hist positivo OU RSI < 50 e acima EMA9 → LONG
                 direction = "LONG" if (macd_hist > 0 or (rsi < 50 and price >= ema9)) else "SHORT"
 
-                # TPs calibrados para RR ponderado ~2.3
-                # splits 35/45/20 → 0.35*1.5R + 0.45*2.3R + 0.20*3.5R = 2.26 ≈ 2.3
-                risk = round(1.5 * atr, 4)
+                # SL = 1x ATR | TPs em 1.5/2.3/3.5x ATR
+                # Ponderado 35/45/20 → 0.35*1.5 + 0.45*2.3 + 0.20*3.5 = 2.26 ≈ 2.3 RR
                 if direction == "LONG":
                     entry = round(price, 4)
-                    sl    = round(price - risk, 4)
+                    sl    = round(price - 1.0 * atr, 4)
                     tp1   = round(price + 1.5 * atr, 4)
                     tp2   = round(price + 2.3 * atr, 4)
                     tp3   = round(price + 3.5 * atr, 4)
                 else:
                     entry = round(price, 4)
-                    sl    = round(price + risk, 4)
+                    sl    = round(price + 1.0 * atr, 4)
                     tp1   = round(price - 1.5 * atr, 4)
                     tp2   = round(price - 2.3 * atr, 4)
                     tp3   = round(price - 3.5 * atr, 4)
