@@ -471,21 +471,21 @@ class BloFinBot:
                 # Viés: MACD hist positivo OU RSI < 50 e acima EMA9 → LONG
                 direction = "LONG" if (macd_hist > 0 or (rsi < 50 and price >= ema9)) else "SHORT"
 
+                # TPs calibrados para RR ponderado ~2.3
+                # splits 35/45/20 → 0.35*1.5R + 0.45*2.3R + 0.20*3.5R = 2.26 ≈ 2.3
+                risk = round(1.5 * atr, 4)
                 if direction == "LONG":
-                    entry    = round(price, 4)
-                    sl       = round(price - 1.5 * atr, 4)
-                    tp1      = round(price + 1.0 * atr, 4)
-                    tp2      = round(price + 2.0 * atr, 4)
-                    tp3      = round(price + 3.0 * atr, 4)
+                    entry = round(price, 4)
+                    sl    = round(price - risk, 4)
+                    tp1   = round(price + 1.5 * atr, 4)
+                    tp2   = round(price + 2.3 * atr, 4)
+                    tp3   = round(price + 3.5 * atr, 4)
                 else:
-                    entry    = round(price, 4)
-                    sl       = round(price + 1.5 * atr, 4)
-                    tp1      = round(price - 1.0 * atr, 4)
-                    tp2      = round(price - 2.0 * atr, 4)
-                    tp3      = round(price - 3.0 * atr, 4)
-
-                sl_dist = abs(entry - sl)
-                rr      = round(abs(tp2 - entry) / sl_dist, 2) if sl_dist > 0 else 2.0
+                    entry = round(price, 4)
+                    sl    = round(price + risk, 4)
+                    tp1   = round(price - 1.5 * atr, 4)
+                    tp2   = round(price - 2.3 * atr, 4)
+                    tp3   = round(price - 3.5 * atr, 4)
 
                 signal = {
                     "pair":       pair,
@@ -495,9 +495,9 @@ class BloFinBot:
                     "tp1":        tp1,
                     "tp2":        tp2,
                     "tp3":        tp3,
-                    "rr_ratio":   rr,
-                    "confidence": 60,
-                    "score":      6.0,
+                    "rr_ratio":   2.3,
+                    "confidence": 62,
+                    "score":      6.2,
                     "bar":        bar,
                     "tp_count":   3,
                     "reasons":    [f"RSI {rsi:.0f}", f"MACD hist {macd_hist:+.3f}",

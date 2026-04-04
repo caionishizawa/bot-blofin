@@ -339,79 +339,75 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
                  recent_wins: int, recent_losses: int) -> str:
     direction  = signal["direction"]
     pair       = signal.get("pair", "N/A")
-    tf         = signal.get("timeframe", "1H")
+    bar        = signal.get("bar", signal.get("timeframe", "4H"))
     entry      = signal.get("entry", 0)
     sl         = signal.get("stop_loss", 0)
     tp1        = signal.get("tp1", 0)
     tp2        = signal.get("tp2", 0)
     tp3        = signal.get("tp3", 0)
-    confidence = signal.get("confidence", 0)
     tp_count   = int(signal.get("tp_count", 3))
-    splits     = TP_SIZING.get(tp_count, TP_SIZING[3])
+    risk_pct   = float(signal.get("risk_pct", 2.0))
+    ref_link   = signal.get("ref_link", ref_link)
 
     dir_emoji = "🟢" if direction == "LONG" else "🔴"
-    dir_label = "LONG ↑" if direction == "LONG" else "SHORT ↓"
-
-    sl_dist = abs(entry - sl)
-    rr = signal.get("rr_ratio", 0)
-    if sl_dist > 0 and tp1:
-        s1 = splits.get("tp1", 35) / 100
-        s2 = splits.get("tp2", 45) / 100 if tp2 else 0
-        s3 = splits.get("tp3", 20) / 100 if tp3 else 0
-        rr = round(
-            abs(tp1 - entry) / sl_dist * s1 +
-            (abs(tp2 - entry) / sl_dist * s2 if tp2 else 0) +
-            (abs(tp3 - entry) / sl_dist * s3 if tp3 else 0), 2
-        )
+    arrow     = "↑" if direction == "LONG" else "↓"
 
     def _chg(price):
         if not entry: return 0.0
         return ((price - entry) / entry * 100) if direction == "LONG" else ((entry - price) / entry * 100)
 
-    raw_setup   = signal.get("setup_type") or ("sniper" if rr >= 4.5 else mode)
-    setup_label, setup_sub = SETUP_META.get(raw_setup, SETUP_META["scalp"])
-    conf_bar    = _confidence_bar(confidence)
-    rr_label    = _rr_label(rr)
-    now         = datetime.now(timezone.utc).strftime("%d/%m %H:%M")
+    sl_dist = abs(entry - sl)
+    splits  = TP_SIZING.get(tp_count, TP_SIZING[3])
+    s1 = splits.get("tp1", 35) / 100
+    s2 = splits.get("tp2", 45) / 100 if tp2 else 0
+    s3 = splits.get("tp3", 20) / 100 if tp3 else 0
+    rr = round(
+        abs(tp1 - entry) / sl_dist * s1 +
+        (abs(tp2 - entry) / sl_dist * s2 if tp2 else 0) +
+        (abs(tp3 - entry) / sl_dist * s3 if tp3 else 0), 1
+    ) if sl_dist > 0 and tp1 else signal.get("rr_ratio", 0)
+
+    now = datetime.now(timezone.utc).strftime("%d/%m · %H:%M")
+
+    # Análise: limpa markdown, pega só as primeiras 2 frases
+    analysis_clean = ""
+    if analysis:
+        import re
+        txt = re.sub(r'[*_`\[\]]', '', analysis).strip()
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', txt) if s.strip()]
+        analysis_clean = " ".join(sentences[:2])
+        if len(analysis_clean) > 280:
+            analysis_clean = analysis_clean[:277] + "..."
 
     # TP lines
-    tp_lines = [f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_"]
+    tp_lines = []
     if tp_count == 1:
-        tp_lines[-1] += "  · 100% saída"
+        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
     elif tp_count == 2:
-        tp_lines[-1] += f"  · {splits['tp1']}% → mover SL"
+        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
         if tp2:
-            tp_lines.append(f"🏆 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · {splits['tp2']}% final")
+            tp_lines.append(f"🏆 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_")
     else:
-        tp_lines[-1] += f"  · {splits['tp1']}% → mover SL"
+        tp_lines.append(f"🎯 *A1*  `{_fmt_price(tp1)}`  _({_chg(tp1):+.1f}%)_")
         if tp2:
-            tp_lines.append(f"🎯 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_  · {splits['tp2']}%")
+            tp_lines.append(f"🎯 *A2*  `{_fmt_price(tp2)}`  _({_chg(tp2):+.1f}%)_")
         if tp3:
-            tp_lines.append(f"🏆 *A3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_  · {splits['tp3']}% runner")
-
-    risk_pct    = float(signal.get("risk_pct", 1.5))
-    calc_link   = signal.get("calc_link", "")
+            tp_lines.append(f"🏆 *A3*  `{_fmt_price(tp3)}`  _({_chg(tp3):+.1f}%)_")
 
     lines = [
-        f"{dir_emoji} *{pair}* — {dir_label}  `{tf}`",
-        f"_{setup_label}  ·  {setup_sub}_",
+        f"{dir_emoji} *{pair}* — *{direction} {arrow}*  `{bar}`",
         f"",
-        f"📍 Entrada   `{_fmt_price(entry)}`",
-        f"🛑 Stop       `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
+        f"📍 Entrada  `{_fmt_price(entry)}`",
+        f"🛑 Stop      `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
         *tp_lines,
         f"",
-        f"⚖️ R:R `{rr}:1` {rr_label}  ·  Conf: {conf_bar} {confidence}%",
-        f"💰 Risco sugerido: *{risk_pct:.1f}% da banca*",
+        f"⚖️ R:R *{rr}:1*  ·  Risco *{risk_pct:.0f}% da banca*",
     ]
 
-    if calc_link:
-        lines.append(f"🧮 [Calcule o tamanho da posição]({calc_link})")
+    if analysis_clean:
+        lines += [f"", f"_{analysis_clean}_"]
 
-    if analysis:
-        safe = analysis.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
-        lines += [f"", f"💬 _{safe}_"]
-
-    lines += [f"", f"_{now} UTC  ·  @sideradogcripto_"]
+    lines += [f"", f"_{now} UTC · @sideradogcripto_"]
 
     if ref_link:
         lines += [f"", f"🔗 [Opere na BloFin]({ref_link})"]
