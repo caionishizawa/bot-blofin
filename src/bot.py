@@ -126,13 +126,16 @@ class BloFinBot:
     # ------------------------------------------------------------------
 
     async def _send(self, text: str, photo=None, chat_id: str = None):
-        """Envia mensagem SEMPRE ao canal free + tópico BOT IA.
-        O parâmetro chat_id é ignorado — toda mensagem vai para free_channel_id."""
-        target = self.free_channel_id or self.channel_id
+        """Envia mensagem SEMPRE no tópico BOT IA (thread_id obrigatório).
+        NUNCA envia no general — bloqueia se TELEGRAM_THREAD_ID não estiver configurado."""
+        target = self.free_channel_id
         if not target:
-            logger.warning("TELEGRAM_CHANNEL_ID não configurado — mensagem ignorada")
+            logger.error("TELEGRAM_FREE_CHANNEL_ID não configurado — mensagem bloqueada")
             return
-        thread = self.thread_id  # sempre usa thread BOT IA
+        thread = self.thread_id
+        if not thread:
+            logger.error("TELEGRAM_THREAD_ID não configurado — mensagem bloqueada para evitar envio no general")
+            return
         try:
             bot: Bot = self._app.bot
             if photo:
