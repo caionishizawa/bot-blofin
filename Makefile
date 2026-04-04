@@ -48,6 +48,28 @@ clean:  ## Clean generated files
 	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete 2>/dev/null || true
 
+# ─── macOS autostart (launchd) ────────────────────────────
+
+mac-install:  ## Instalar autostart no Mac (inicia com o login)
+	chmod +x install_mac.sh start_bot.sh
+	./install_mac.sh install
+
+mac-uninstall:  ## Remover autostart do Mac
+	./install_mac.sh --uninstall
+
+mac-status:  ## Ver status do bot no Mac
+	./install_mac.sh --status
+
+mac-logs:  ## Ver logs do bot em tempo real
+	./install_mac.sh --logs
+
+mac-restart:  ## Reiniciar o bot (via launchd)
+	launchctl unload ~/Library/LaunchAgents/com.botblofin.plist 2>/dev/null || true
+	launchctl load ~/Library/LaunchAgents/com.botblofin.plist
+
+mac-stop:  ## Parar o bot (sem remover autostart)
+	launchctl unload ~/Library/LaunchAgents/com.botblofin.plist 2>/dev/null || true
+
 # ─── Git helpers ──────────────────────────────────────────
 
 git-phase1:  ## Commit Phase 1

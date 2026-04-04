@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent para o Bot BloFin no macOS
+  Inicia o bot automaticamente quando o Mac liga/usuário faz login.
+  Reinicia automaticamente se o processo morrer (KeepAlive = true).
+
+  INSTALAÇÃO (ver install_mac.sh ou instruções abaixo):
+    cp com.botblofin.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.botblofin.plist
+
+  REMOVER:
+    launchctl unload ~/Library/LaunchAgents/com.botblofin.plist
+    rm ~/Library/LaunchAgents/com.botblofin.plist
+-->
+<plist version="1.0">
+<dict>
+    <!-- Identificador único do serviço -->
+    <key>Label</key>
+    <string>com.botblofin</string>
+
+    <!-- Comando a executar (caminho absoluto — será atualizado pelo install_mac.sh) -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>BOT_DIR_PLACEHOLDER/start_bot.sh</string>
+    </array>
+
+    <!-- Diretório de trabalho -->
+    <key>WorkingDirectory</key>
+    <string>BOT_DIR_PLACEHOLDER</string>
+
+    <!-- Reiniciar automaticamente se crashar ou parar -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Iniciar junto com o login do usuário -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Logs de saída padrão -->
+    <key>StandardOutPath</key>
+    <string>BOT_DIR_PLACEHOLDER/logs/launchd_stdout.log</string>
+
+    <!-- Logs de erros -->
+    <key>StandardErrorPath</key>
+    <string>BOT_DIR_PLACEHOLDER/logs/launchd_stderr.log</string>
+
+    <!-- Throttle: esperar no mínimo 10s antes de reiniciar -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Variáveis de ambiente para o processo -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>HOME_DIR_PLACEHOLDER</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <!-- Processar dependências de rede antes de iniciar -->
+    <key>WaitForDebugger</key>
+    <false/>
+</dict>
+</plist>
