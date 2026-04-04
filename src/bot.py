@@ -1315,45 +1315,72 @@ class BloFinBot:
             )
 
     def _schedule_daily_scans(self) -> list:
-        """Gera UMA missão por dia: portfolio 4H que seleciona 6 sinais com hedge
-        e os distribui em horários aleatórios ao longo do dia via _pending_signals.
+        """Gera N scans independentes em horários aleatórios ao longo do dia.
 
-        Fim de semana: portfolio reduzido de 4 sinais.
+        Cada scan roda na hora marcada com dados FRESCOS e envia 1 sinal imediatamente.
+        Dias úteis: 6 scans | Fim de semana: 4 scans.
+        Janela: 09:00 → 21:30. Slots iguais, 1 horário aleatório por slot.
+        Restart após início do dia: ignora slots já passados — não perde o dia todo.
         """
         today   = date.today()
         weekday = today.weekday()  # 0=Seg … 6=Dom
+        now     = datetime.now()
 
-        # Fim de semana: portfolio menor (mercado menos líquido)
-        n_signals = 4 if weekday in (5, 6) else 6
+        # Fim de semana: menos scans (mercado menos líquido)
+        n_total = 4 if weekday in (5, 6) else 6
 
-        # Horário do scan de seleção: entre 08:45 e 09:15 (aleatório)
-        base       = datetime.combine(today, time(9, 0))
-        offset     = random.randint(-15, 15)
-        scan_time  = base + timedelta(minutes=offset)
+        # 3 períodos fixos: manhã | tarde | noite
+        # Os N scans são distribuídos proporcionalmente entre eles
+        _periods = [
+            (9.0,  13.0),   # Manhã:  09:00 – 13:00
+            (13.0, 18.0),   # Tarde:  13:00 – 18:00
+            (18.0, 22.5),   # Noite:  18:00 – 22:30
+        ]
+        # Ex: 6 scans → 2 por período | 4 scans → 1-2-1
+        per_period = max(1, n_total // 3)
+        slots_per_period = [per_period] * 3
+        # distribui resto nos primeiros períodos
+        for i in range(n_total - sum(slots_per_period)):
+            slots_per_period[i] += 1
 
-        # Proteção contra restart após 09h: se o horário já passou hoje,
-        # não agenda nada — evita segundo lote no mesmo dia.
-        now = datetime.now()
-        if scan_time <= now:
-            logger.warning(
-                f"Restart detectado após horário do scan ({scan_time.strftime('%H:%M')}). "
-                f"Nenhuma missão agendada para hoje — próximo scan amanhã."
-            )
-            self._today_schedule = []
-            return []
+        # Padrão alternado de timeframes para cobrir scalp + swing
+        _bars  = ["1H", "4H", "1H", "4H", "1H", "4H"]
+        _modes = ["scalp", "swing", "scalp", "swing", "scalp", "swing"]
 
-        missions = [{
-            "time":        scan_time,
-            "bar":         "4H",
-            "mode":        "portfolio",
-            "max_signals": n_signals,
-        }]
+        missions = []
+        idx = 0
+        for p_idx, (p_start, p_end) in enumerate(_periods):
+            n_in_period = slots_per_period[p_idx]
+            slot = (p_end - p_start) / n_in_period
+            for j in range(n_in_period):
+                lo = p_start + j * slot + 0.05
+                hi = p_start + (j + 1) * slot - 0.05
+                rh = random.uniform(lo, hi)
+                h, m = int(rh), int((rh % 1) * 60)
+                t = datetime.combine(today, time(h, m))
+                bar_idx = idx
+                idx += 1
+
+                # Slots já passados são ignorados (restart no meio do dia não perde tudo)
+                if t <= now:
+                    logger.info(f"Slot {bar_idx+1} ({t.strftime('%H:%M')}) já passou — ignorado.")
+                    continue
+
+                missions.append({
+                    "time":        t,
+                    "bar":         _bars[bar_idx % len(_bars)],
+                    "mode":        _modes[bar_idx % len(_modes)],
+                    "max_signals": 1,
+                })
 
         self._today_schedule = [m["time"] for m in missions]
 
+        day_name = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'][weekday]
+        times_str = ", ".join(
+            f"{m['time'].strftime('%H:%M')}[{m['bar']}]" for m in missions
+        )
         logger.info(
-            f"Agenda [{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'][weekday]}] "
-            f"1 missão: {scan_time.strftime('%H:%M')} [4H/portfolio] max={n_signals}"
+            f"Agenda [{day_name}] {len(missions)} missão(ões): {times_str}"
         )
         return missions
 
