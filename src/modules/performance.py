@@ -553,6 +553,10 @@ class PerformanceDB:
             history.append({"date": r["closed_at"], "bankroll": round(running, 2), "pnl_usd": r["pnl_usd"] or 0.0})
         return history
 
+    async def reset_trades(self):
+        """Apaga todos os trades do histórico (zera o placar)."""
+        await self._backend.execute("DELETE FROM trades")
+
     async def close(self):
         await self._backend.close()
 

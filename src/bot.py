@@ -375,6 +375,50 @@ class BloFinBot:
         self.tracker.active_trades.clear()
         await self._reply(update, f"✅ {count} trade(s) removido(s) do tracker.")
 
+    async def cmd_resetall(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: zera todo o histórico de trades e PnL. Uso: /resetall"""
+        if not self._is_admin(update):
+            await self._reply(update, "⛔ Acesso restrito.")
+            return
+        # Limpa tracker em memória
+        trade_count = len(self.tracker.active_trades)
+        self.tracker.active_trades.clear()
+        # Limpa banco de dados
+        await self.db.reset_trades()
+        # Zera contadores de PnL
+        self._realized_pnl_usd = 0.0
+        self._unrealized_pnl_usd = 0.0
+        self._current_bankroll = self.bankroll
+        # Reseta flag do portfolio
+        self._portfolio_sent_date = ""
+        logger.info("Reset completo: trades, PnL e banca zerados.")
+        await self._reply(
+            update,
+            f"🔄 *Reset completo!*\n\n"
+            f"• {trade_count} trade(s) ativos removidos\n"
+            f"• Histórico do DB apagado\n"
+            f"• PnL zerado → $0.00\n"
+            f"• Banca → ${self.bankroll:.2f}\n\n"
+            f"_Começando do zero agora_ ✅",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def cmd_forcescan(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        """Admin: força um scan imediato e envia sinal. Uso: /forcescan [1H|4H|15m]"""
+        if not self._is_admin(update):
+            await self._reply(update, "⛔ Acesso restrito.")
+            return
+        args = ctx.args
+        bar = args[0].upper() if args else "1H"
+        mode = "scalp" if bar in ("15m", "30m", "1H") else "swing"
+        msg = await self._reply(update, f"🔍 Forçando scan {bar}...")
+        mission = {"bar": bar, "mode": mode, "max_signals": 1}
+        count = await self._scan_cycle(mission=mission)
+        if count:
+            await msg.edit_text(f"✅ {count} sinal(is) enviado(s) — {bar}")
+        else:
+            await msg.edit_text(f"⚠️ Nenhum sinal válido encontrado no {bar}. Tente outro timeframe.")
+
     async def cmd_newtrade(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         """Cria um trade manual. Uso: /newtrade PAR DIREÇÃO ENTRADA SL TP1 TP2 TP3"""
         if not self._is_admin(update):
@@ -1496,6 +1540,8 @@ class BloFinBot:
         self._app.add_handler(CommandHandler("disable", self.cmd_disable))
         self._app.add_handler(CommandHandler("groups", self.cmd_groups))
         self._app.add_handler(CommandHandler("cleartrades", self.cmd_cleartrades))
+        self._app.add_handler(CommandHandler("resetall", self.cmd_resetall))
+        self._app.add_handler(CommandHandler("forcescan", self.cmd_forcescan))
         self._app.add_handler(CommandHandler("newtrade", self.cmd_newtrade))
         self._app.add_handler(CommandHandler("agenda", self.cmd_agenda))
         self._app.add_handler(CommandHandler("broadcast", self.cmd_broadcast))
