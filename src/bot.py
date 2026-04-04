@@ -1559,9 +1559,22 @@ class BloFinBot:
 
 
 def main():
+    import time as _time
     config = load_config()
-    bot = BloFinBot(config)
-    asyncio.run(bot.run())
+    retry_delay = 30  # segundos entre tentativas
+
+    while True:
+        try:
+            bot = BloFinBot(config)
+            asyncio.run(bot.run())
+            break  # saída limpa (Ctrl+C ou stop normal)
+        except KeyboardInterrupt:
+            logger.info("Bot encerrado pelo usuário.")
+            break
+        except Exception as e:
+            logger.error(f"Bot encerrado com erro: {e}. Reiniciando em {retry_delay}s...")
+            _time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 300)  # backoff até 5 min
 
 
 if __name__ == "__main__":
