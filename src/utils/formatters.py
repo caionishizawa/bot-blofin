@@ -351,14 +351,13 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
 
     is_long   = direction == "LONG"
     dir_emoji = "🟢" if is_long else "🔴"
-    dir_label = "COMPRA" if is_long else "VENDA"
+    action    = "COMPRAR" if is_long else "VENDER"
 
     def _chg(price):
         if not entry: return 0.0
         return ((price - entry) / entry * 100) if is_long else ((entry - price) / entry * 100)
 
-    rr = signal.get("rr_ratio", 2.3)
-
+    rr  = signal.get("rr_ratio", 2.3)
     now = datetime.now(timezone.utc).strftime("%d/%m · %H:%M")
 
     # Análise: extrai só a primeira frase útil (sem numeração, sem markdown)
@@ -370,35 +369,38 @@ def _format_full(signal: dict, analysis: str, ref_link: str, mode: str,
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', txt) if len(s.strip()) > 20]
         if sentences:
             analysis_clean = sentences[0]
-            if len(analysis_clean) > 220:
-                analysis_clean = analysis_clean[:217] + "..."
+            if len(analysis_clean) > 200:
+                analysis_clean = analysis_clean[:197] + "..."
 
-    # TP lines — linguagem simples para qualquer pessoa entender
-    tp_icons = ["✅", "✅✅", "🏆"]
-    tp_labels = ["Alvo 1", "Alvo 2", "Alvo 3"]
-    tp_vals = [tp1, tp2, tp3]
-    tp_lines = []
-    for i, (tv, icon, lbl) in enumerate(zip(tp_vals[:tp_count], tp_icons, tp_labels)):
+    # TP lines com explicação simples
+    tp_vals   = [tp1, tp2, tp3]
+    tp_emojis = ["💰", "💰💰", "🏆"]
+    tp_tips   = ["feche 35% aqui", "feche mais 45%", "feche o restante"]
+    tp_lines  = []
+    for i, (tv, em, tip) in enumerate(zip(tp_vals[:tp_count], tp_emojis, tp_tips)):
         if tv:
-            tp_lines.append(f"{icon} *{lbl}*  `{_fmt_price(tv)}`  _({_chg(tv):+.1f}%)_")
+            tp_lines.append(f"{em} *Lucro {i+1}*  `{_fmt_price(tv)}`  _({_chg(tv):+.1f}%)_ — _{tip}_")
+
+    sl_tip = "se o preço cair aqui, saia imediatamente" if is_long else "se o preço subir aqui, saia imediatamente"
 
     lines = [
-        f"{dir_emoji} *{pair}*  ·  *{dir_label}*  `{bar}`",
+        f"{dir_emoji} *{pair}*  ·  *{action}*  `{bar}`",
         f"",
-        f"🔵 Entra em  `{_fmt_price(entry)}`",
-        f"🔴 Zera em    `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_",
+        f"🔵 *Entre em*  `{_fmt_price(entry)}`",
+        f"🛑 *Stop*  `{_fmt_price(sl)}`  _({_chg(sl):+.1f}%)_ — _{sl_tip}_",
+        f"",
         *tp_lines,
         f"",
-        f"⚖️ R:R *{rr}:1*  ·  Risco *{risk_pct:.0f}% da banca*",
+        f"⚖️ Risco x Retorno *{rr}:1*  ·  Arrisque *{risk_pct:.0f}% da sua banca*",
     ]
 
     if analysis_clean:
-        lines += [f"", f"_{analysis_clean}_"]
+        lines += [f"", f"💬 _{analysis_clean}_"]
 
     lines += [f"", f"_{now} UTC · @sideradogcripto_"]
 
     if ref_link:
-        lines += [f"", f"🔗 [Opere na BloFin]({ref_link})"]
+        lines += [f"", f"🔗 [Abra sua conta na BloFin]({ref_link})"]
 
     return "\n".join(lines)
 

@@ -518,6 +518,7 @@ class BloFinBot:
             signal["trade_mode"]  = mode
             signal["setup_type"]  = self._classify_setup(signal, mode)
             signal["calc_link"]   = self.calc_link
+            signal["candles_df"]  = df  # necessário para gerar o gráfico
 
             # Envia com gráfico + análise LLM
             await self._register_trade(signal)
